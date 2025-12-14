@@ -2,160 +2,234 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # ---------------------------------------------------------
-# 1. 페이지 설정
+# 1. Page Config
 # ---------------------------------------------------------
-st.set_page_config(page_title="Backtester_v0.1", layout="wide")
-st.title("Backtester")
+st.set_page_config(page_title="DCA Backtest Simulator", layout="wide")
+st.title("📈 DCA (Dollar Cost Averaging) Backtest Simulator")
 
 # ---------------------------------------------------------
-# 2. 티커 리스트 (사용자 요청 반영: 암호화폐 Top 10 포함)
+# 2. Predefined Ticker List
 # ---------------------------------------------------------
 common_tickers = [
-    # [미국 지수/섹터]
+    # [US Indices/Sectors]
     "QQQ", "TQQQ", "QLD", "PSQ", "SQQQ", 
     "SPY", "UPRO", "SSO", 
     "SOXX", "SOXL", "SOXS", 
     "TLT", "TMF", "TMV",
     
-    # [미국 빅테크/개별주]
+    # [Big Tech/Individual]
     "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", "META", "NFLX",
     "COIN", "MSTR", 
     
-    # [암호화폐 Top 10 (Stablecoin 제외)]
-    "BTC-USD",   # Bitcoin
-    "ETH-USD",   # Ethereum
-    "SOL-USD",   # Solana
-    "BNB-USD",   # Binance Coin
-    "XRP-USD",   # XRP
-    "DOGE-USD",  # Dogecoin
-    "ADA-USD",   # Cardano
-    "TRX-USD",   # TRON
-    "AVAX-USD",  # Avalanche
-    "SHIB-USD",  # Shiba Inu
+    # [Crypto Top 10]
+    "BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", 
+    "DOGE-USD", "ADA-USD", "TRX-USD", "AVAX-USD", "SHIB-USD",
 
-    # [한국 주식 예시]
-    "005930.KS", # 삼성전자
-    "000660.KS", # SK하이닉스
+    # [Korean Stocks]
+    "005930.KS", "000660.KS"
 ]
 
 # ---------------------------------------------------------
-# 3. 사이드바 설정 (입력)
+# 3. Sidebar Inputs
 # ---------------------------------------------------------
 with st.sidebar:
-    st.header("⚙️ 설정 패널")
+    st.header("⚙️ Settings")
     
-    # 티커 선택 (직접 입력도 가능)
-    selected_ticker = st.selectbox("티커 선택", common_tickers, index=0)
-    ticker_input = st.text_input("직접 입력 (예: KRW=X)", value="")
+    # Ticker Selection (No direct input)
+    selected_ticker = st.selectbox("Select Asset", common_tickers, index=0)
     
-    final_ticker = ticker_input.upper() if ticker_input else selected_ticker
-
-    # 기간 설정
+    # Date Range
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("시작일", datetime(2020, 1, 1))
+        start_date = st.date_input("Start Date", datetime(2020, 1, 1))
     with col2:
-        end_date = st.date_input("종료일", datetime.now())
+        end_date = st.date_input("End Date", datetime.now())
 
-    # 초기 자본
-    initial_capital = st.number_input("초기 자본 ($)", value=10000, step=1000)
+    st.markdown("---")
+    
+    # Capital & Contribution
+    initial_capital = st.number_input("Initial Capital ($)", value=10000, step=1000)
+    recurring_amount = st.number_input("Recurring Contribution ($)", value=500, step=100)
+    
+    # Frequency
+    frequency = st.selectbox("Contribution Frequency", ["Monthly", "Weekly", "Daily"], index=0)
+    
+    st.markdown("---")
+    
+    # Chart Options
+    use_log_scale = st.checkbox("Use Log Scale (Price & Portfolio)", value=False)
 
-    st.subheader("전략 파라미터 (EMA)")
-    ema_short_period = st.number_input("단기 이평선 (Short)", value=20)
-    ema_long_period = st.number_input("장기 이평선 (Long)", value=60)
-
-    run_btn = st.button("백테스트 실행 🚀")
+    st.markdown("---")
+    
+    run_btn = st.button("Run Simulation 🚀")
 
 # ---------------------------------------------------------
-# 4. 데이터 로드 및 계산 함수
+# 4. Data & Calculation Functions
 # ---------------------------------------------------------
 @st.cache_data
 def get_data(ticker, start, end):
-    df = yf.download(ticker, start=start, end=end, progress=False)
-    if df.empty:
+    try:
+        df = yf.download(ticker, start=start, end=end, progress=False)
+        if df.empty:
+            return None
+        # Handle MultiIndex columns if necessary
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        return df[['Close']]
+    except Exception as e:
         return None
-    # 멀티인덱스 컬럼 처리 (yfinance 최신 버전 대응)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df
 
-def run_backtest(df, short_p, long_p, initial_cap):
-    # 지표 계산
-    df['EMA_Short'] = df['Close'].ewm(span=short_p, adjust=False).mean()
-    df['EMA_Long'] = df['Close'].ewm(span=long_p, adjust=False).mean()
+def run_dca_backtest(df, initial_cap, recurring_amt, freq):
+    df = df.copy()
     
-    # 시그널: 단기 > 장기일 때 매수 (1), 아니면 매도 (0)
-    # (여기서는 간단하게 롱 포지션만 잡는 전략으로 가정)
-    df['Signal'] = 0
-    df.loc[df['EMA_Short'] > df['EMA_Long'], 'Signal'] = 1
+    # Calculate returns
+    df['Daily_Return'] = df['Close'].pct_change().fillna(0)
     
-    # 포지션 변경 확인 (1: 매수 진입, -1: 매도 청산)
-    df['Position_Change'] = df['Signal'].diff()
+    # Initialize simulation columns
+    df['Cash_Flow'] = 0.0
+    df['Total_Invested'] = 0.0
+    df['Holdings_Shares'] = 0.0
+    df['Portfolio_Value'] = 0.0
+    
+    # Setup resampling rule based on frequency
+    # We will mark 'True' on days when contribution happens
+    df['Contribution_Day'] = False
+    
+    if freq == 'Daily':
+        df['Contribution_Day'] = True
+    elif freq == 'Weekly':
+        # Contribution on the first available day of the week (Monday or first trading day)
+        # Using week number to identify unique weeks
+        df['Week_Num'] = df.index.isocalendar().week
+        df['Year_Num'] = df.index.isocalendar().year
+        # Group by Year/Week and take the first index
+        contribution_indices = df.groupby(['Year_Num', 'Week_Num']).head(1).index
+        df.loc[contribution_indices, 'Contribution_Day'] = True
+    elif freq == 'Monthly':
+        # Contribution on the first available day of the month
+        df['Month_Num'] = df.index.month
+        df['Year_Num'] = df.index.year
+        contribution_indices = df.groupby(['Year_Num', 'Month_Num']).head(1).index
+        df.loc[contribution_indices, 'Contribution_Day'] = True
 
-    # 수익률 계산
-    df['Daily_Return'] = df['Close'].pct_change()
+    # Iterative calculation (necessary for DCA because shares accumulate)
+    # Using a loop is slower but accurate for cash flows. 
+    # Optimized approach: Calculate cumulative shares and cash flows.
     
-    # 전략 수익률 (전일 시그널 기준)
-    df['Strategy_Return'] = df['Signal'].shift(1) * df['Daily_Return']
-    df['Strategy_Return'].fillna(0, inplace=True)
+    current_shares = initial_cap / df['Close'].iloc[0]
+    total_invested = initial_cap
     
-    # 포트폴리오 가치
-    df['Portfolio_Value'] = initial_cap * (1 + df['Strategy_Return']).cumprod()
-    df['Buy_Hold_Value'] = initial_cap * (1 + df['Daily_Return']).cumprod()
+    # Lists to store computed series
+    shares_list = []
+    invested_list = []
     
-    # 낙폭(MDD) 계산
+    # Fast iteration
+    # Create numpy arrays for speed
+    closes = df['Close'].values
+    is_contrib = df['Contribution_Day'].values
+    
+    current_shares_arr = []
+    total_invested_arr = []
+    
+    curr_sh = initial_cap / closes[0]
+    tot_inv = initial_cap
+    
+    for i in range(len(df)):
+        price = closes[i]
+        
+        # Add recurring contribution if it's the day (skip first day for recurring, 
+        # or handle differently? usually Start Date has Initial, subsequent periods have Recurring)
+        # Here we assume Initial Capital is at t=0. 
+        # Recurring starts from the first trigger found.
+        
+        # Logic: If it is a contribution day, buy more shares
+        if is_contrib[i]:
+            # We assume buying at Close price
+            new_shares = recurring_amt / price
+            curr_sh += new_shares
+            tot_inv += recurring_amt
+            
+        current_shares_arr.append(curr_sh)
+        total_invested_arr.append(tot_inv)
+        
+    df['Holdings_Shares'] = current_shares_arr
+    df['Total_Invested'] = total_invested_arr
+    df['Portfolio_Value'] = df['Holdings_Shares'] * df['Close']
+    
+    # Drawdown Calculation
     df['Peak'] = df['Portfolio_Value'].cummax()
     df['Drawdown'] = (df['Portfolio_Value'] - df['Peak']) / df['Peak']
     
     return df
 
 # ---------------------------------------------------------
-# 5. 차트 그리기 함수 (스타일 수정 적용됨)
+# 5. Plotting Function
 # ---------------------------------------------------------
-def plot_charts(df, ticker):
-    # --- 1. Portfolio Value 차트 ---
+def plot_dca_charts(df, ticker, log_scale):
+    y_axis_type = "log" if log_scale else "linear"
+    
+    # --- 1. Asset Price Chart ---
+    fig_price = go.Figure()
+    fig_price.add_trace(go.Scatter(
+        x=df.index, y=df['Close'],
+        mode='lines',
+        name=f'{ticker} Price',
+        line=dict(color='black', width=1.0)
+    ))
+    fig_price.update_layout(
+        title=f'📊 1. Asset Price Chart ({ticker})',
+        xaxis_title='Date',
+        yaxis_title='Price ($)',
+        yaxis_type=y_axis_type,
+        template='plotly_white',
+        hovermode='x unified'
+    )
+    st.plotly_chart(fig_price, use_container_width=True)
+
+    # --- 2. Portfolio Value Chart ---
     fig_value = go.Figure()
     
-    # 전략 성과
+    # Portfolio Value
     fig_value.add_trace(go.Scatter(
         x=df.index, y=df['Portfolio_Value'],
         mode='lines',
-        name='Strategy',
-        line=dict(color='red', width=1.0)  # width 1.0
+        name='Portfolio Value',
+        line=dict(color='red', width=1.0)
     ))
     
-    # Buy & Hold 성과 (검은색 실선 변경)
+    # Total Invested (Principal)
     fig_value.add_trace(go.Scatter(
-        x=df.index, y=df['Buy_Hold_Value'],
+        x=df.index, y=df['Total_Invested'],
         mode='lines',
-        name=f'Only 1.0x ({ticker})',
-        line=dict(color='black', width=1.0, dash='solid')  # 검은색, 실선, width 1.0
+        name='Total Invested (Principal)',
+        line=dict(color='gray', width=1.0, dash='dash')
     ))
-    
+
     fig_value.update_layout(
-        title=f'💰 Portfolio Value vs Buy & Hold ({ticker})',
+        title=f'💰 2. Portfolio Value (Accumulated)',
         xaxis_title='Date',
         yaxis_title='Value ($)',
+        yaxis_type=y_axis_type,
         template='plotly_white',
         hovermode='x unified',
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     st.plotly_chart(fig_value, use_container_width=True)
 
-    # --- 2. Drawdown 차트 ---
+    # --- 3. Drawdown Chart ---
     fig_dd = go.Figure()
     fig_dd.add_trace(go.Scatter(
         x=df.index, y=df['Drawdown'] * 100,
         mode='lines',
         name='Drawdown',
         fill='tozeroy',
-        line=dict(color='blue', width=1.0)  # width 1.0
+        line=dict(color='blue', width=1.0)
     ))
     fig_dd.update_layout(
-        title='🌊 Drawdown (%)',
+        title='🌊 3. Drawdown (%)',
         xaxis_title='Date',
         yaxis_title='Drawdown (%)',
         template='plotly_white',
@@ -163,98 +237,39 @@ def plot_charts(df, ticker):
     )
     st.plotly_chart(fig_dd, use_container_width=True)
 
-    # --- 3. Condition (Price & EMA) 차트 ---
-    fig_cond = go.Figure()
-    
-    # 주가
-    fig_cond.add_trace(go.Scatter(
-        x=df.index, y=df['Close'],
-        mode='lines',
-        name='Close Price',
-        line=dict(color='gray', width=1.0)  # width 1.0
-    ))
-    
-    # 단기 EMA (실선 변경)
-    fig_cond.add_trace(go.Scatter(
-        x=df.index, y=df['EMA_Short'],
-        mode='lines',
-        name=f'EMA {ema_short_period}',
-        line=dict(color='orange', width=1.0, dash='solid')  # 실선, width 1.0
-    ))
-        
-    # 장기 EMA (실선 변경)
-    fig_cond.add_trace(go.Scatter(
-        x=df.index, y=df['EMA_Long'],
-        mode='lines',
-        name=f'EMA {ema_long_period}',
-        line=dict(color='green', width=1.0, dash='solid')  # 실선, width 1.0
-    ))
-
-    # 매수/매도 화살표
-    buy_signals = df[df['Position_Change'] == 1]
-    sell_signals = df[df['Position_Change'] == -1]
-
-    if not buy_signals.empty:
-        fig_cond.add_trace(go.Scatter(
-            x=buy_signals.index, y=buy_signals['Close'],
-            mode='markers',
-            name='Buy Signal',
-            marker=dict(symbol='triangle-up', size=8, color='red')
-        ))
-    
-    if not sell_signals.empty:
-        fig_cond.add_trace(go.Scatter(
-            x=sell_signals.index, y=sell_signals['Close'],
-            mode='markers',
-            name='Sell Signal',
-            marker=dict(symbol='triangle-down', size=8, color='blue')
-        ))
-
-    fig_cond.update_layout(
-        title=f'📊 Price & EMA Condition ({ticker})',
-        xaxis_title='Date',
-        yaxis_title='Price',
-        template='plotly_white',
-        hovermode='x unified'
-    )
-    st.plotly_chart(fig_cond, use_container_width=True)
-
 # ---------------------------------------------------------
-# 6. 메인 실행 로직
+# 6. Main Execution
 # ---------------------------------------------------------
 if run_btn:
-    with st.spinner(f'{final_ticker} 데이터 불러오는 중...'):
-        df = get_data(final_ticker, start_date, end_date)
+    with st.spinner(f'Fetching data for {selected_ticker}...'):
+        df = get_data(selected_ticker, start_date, end_date)
         
     if df is not None and not df.empty:
-        # 백테스트 실행
-        df = run_backtest(df, ema_short_period, ema_long_period, initial_capital)
+        # Run Backtest
+        df = run_dca_backtest(df, initial_capital, recurring_amount, frequency)
         
-        # 결과 요약 계산
+        # Summary Metrics
         final_value = df['Portfolio_Value'].iloc[-1]
-        bh_value = df['Buy_Hold_Value'].iloc[-1]
+        total_invested = df['Total_Invested'].iloc[-1]
+        profit = final_value - total_invested
+        total_return_pct = (profit / total_invested) * 100
+        max_dd = df['Drawdown'].min() * 100
         
-        total_return = (final_value / initial_capital - 1) * 100
-        bh_return = (bh_value / initial_capital - 1) * 100
-        mdd = df['Drawdown'].min() * 100
+        # Display Results
+        st.success(f"Simulation Complete: {selected_ticker}")
         
-        # 화면 출력
-        st.success(f"백테스트 완료! ({final_ticker})")
-        
-        # 메트릭 표시
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("최종 자산", f"${final_value:,.0f}")
-        col2.metric("전략 수익률", f"{total_return:.2f}%")
-        col3.metric("단순보유 수익률", f"{bh_return:.2f}%")
-        col4.metric("최대 낙폭 (MDD)", f"{mdd:.2f}%")
+        col1.metric("Final Value", f"${final_value:,.0f}")
+        col2.metric("Total Invested", f"${total_invested:,.0f}")
+        col3.metric("Total Profit", f"${profit:,.0f} ({total_return_pct:.2f}%)")
+        col4.metric("Max Drawdown", f"{max_dd:.2f}%")
         
-        # 차트 그리기
-        plot_charts(df, final_ticker)
+        # Plot Charts
+        plot_dca_charts(df, selected_ticker, use_log_scale)
         
-        # 데이터프레임 보이기 (옵션)
-        with st.expander("상세 데이터 보기"):
-            st.dataframe(df.style.format("{:.2f}"))
+        # Optional: Show Data
+        with st.expander("View Detailed Data"):
+            st.dataframe(df[['Close', 'Total_Invested', 'Portfolio_Value', 'Drawdown']].style.format("{:.2f}"))
             
     else:
-        st.error("데이터를 가져올 수 없습니다. 티커나 날짜를 확인해주세요.")
-
+        st.error("Failed to fetch data. Please check the ticker or date range.")
