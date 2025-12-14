@@ -3,7 +3,6 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 from datetime import datetime
 
 # ---------------------------------------------------------
@@ -93,7 +92,6 @@ def get_data_multi(tickers, start, end):
         return pd.DataFrame()
     try:
         data = yf.download(tickers, start=start, end=end, progress=False)['Close']
-        # If single ticker, yfinance returns Series, convert to DataFrame
         if isinstance(data, pd.Series):
             data = data.to_frame(name=tickers[0])
         return data
@@ -101,13 +99,8 @@ def get_data_multi(tickers, start, end):
         return pd.DataFrame()
 
 def run_dca_backtest(series, initial_cap, recurring_amt, freq):
-    """
-    Runs DCA backtest for a single price series (pd.Series).
-    Returns a DataFrame with results.
-    """
     df = series.to_frame(name='Close')
     df = df.dropna()
-    
     if df.empty: return None
 
     df['Daily_Return'] = df['Close'].pct_change().fillna(0)
@@ -191,151 +184,129 @@ def display_metrics_block(metrics, title, color_bar):
         st.metric("Sortino Ratio", f"{metrics['sortino']:.2f}", help="소티노 지수 (하락 위험 대비 수익률).")
 
 # ---------------------------------------------------------
-# 5. Perfect Sync Chart Function (Multi-Asset)
+# 5. Plotting Functions (Separated Charts)
 # ---------------------------------------------------------
-def plot_charts_synced_multi(results_dict, main_ticker, log_scale):
+def plot_charts_separated(results_dict, main_ticker, log_scale):
     y_axis_type = "log" if log_scale else "linear"
     
-    # Identify Comparison Tickers
     comp_tickers = [t for t in results_dict.keys() if t != main_ticker]
     has_comp = len(comp_tickers) > 0
+    colors = ['orange', 'green', 'purple', 'brown', 'cyan'] 
     
-    # 1. Create Subplots
-    fig = make_subplots(
-        rows=3, cols=1,
-        shared_xaxes=True, 
-        vertical_spacing=0.03,
-        subplot_titles=(
-            '💰 Portfolio Value',
-            '⚖️ Winning (Diff from Main)',
-            '🌊 Drawdown (%)'
-        ),
-        row_heights=[0.5, 0.25, 0.25]
-    )
-
-    # --- Colors for multiple lines ---
-    colors = ['orange', 'green', 'purple', 'brown', 'cyan'] # Main is always Red
-
-    # --- Row 1: Portfolio Value ---
-    # Main Asset (Red)
     main_df = results_dict[main_ticker]
-    fig.add_trace(go.Scatter(
+
+    # --- 1. Portfolio Value Chart ---
+    fig_val = go.Figure()
+    
+    # Main
+    fig_val.add_trace(go.Scatter(
         x=main_df.index, y=main_df['Portfolio_Value'],
         mode='lines', name=f'{main_ticker} (Main)',
-        line=dict(color='red', width=2),
-        legendgroup='g1'
-    ), row=1, col=1)
+        line=dict(color='red', width=2)
+    ))
 
-    # Comparison Assets
+    # Comps
     for idx, ticker in enumerate(comp_tickers):
         color = colors[idx % len(colors)]
         comp_df = results_dict[ticker]
-        fig.add_trace(go.Scatter(
+        fig_val.add_trace(go.Scatter(
             x=comp_df.index, y=comp_df['Portfolio_Value'],
             mode='lines', name=f'{ticker}',
-            line=dict(color=color, width=1.5),
-            legendgroup='g1'
-        ), row=1, col=1)
+            line=dict(color=color, width=1.5)
+        ))
 
-    # Total Invested (Common) - Assuming same logic for all, take main
-    fig.add_trace(go.Scatter(
+    # Invested
+    fig_val.add_trace(go.Scatter(
         x=main_df.index, y=main_df['Total_Invested'],
-        mode='lines', name='Invested',
-        line=dict(color='gray', width=1.0, dash='dash'),
-        legendgroup='g1'
-    ), row=1, col=1)
+        mode='lines', name='Total Invested',
+        line=dict(color='gray', width=1.0, dash='dash')
+    ))
 
-    # --- Row 2: Winning (Difference vs Main) ---
+    fig_val.update_layout(
+        title=f'💰 1. Portfolio Value Comparison',
+        xaxis_title='Date', yaxis_title='Value ($)',
+        yaxis_type=y_axis_type, template='plotly_white', hovermode='x unified',
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    st.plotly_chart(fig_val, use_container_width=True)
+
+    # --- 2. Winning Chart ---
     if has_comp:
+        fig_win = go.Figure()
         for idx, ticker in enumerate(comp_tickers):
             color = colors[idx % len(colors)]
             comp_df = results_dict[ticker]
-            # Diff = Comp - Main (or Main - Comp? User usually wants to see if Main is winning)
-            # Let's do: Comparison - Main (To show how Comp performs relative to Main baseline 0)
-            # OR: Main - Comparison. 
-            # Standard: Main Asset Advantage. (Positive = Main is better)
             
             # Align Index
             aligned_comp = comp_df['Portfolio_Value'].reindex(main_df.index, method='ffill')
             diff = main_df['Portfolio_Value'] - aligned_comp
             
-            fig.add_trace(go.Scatter(
+            fig_win.add_trace(go.Scatter(
                 x=diff.index, y=diff,
                 mode='lines', name=f'Main vs {ticker}',
                 line=dict(color=color, width=1.0),
-                fill='tozeroy', # Fill to zero
-                legendgroup='g2'
-            ), row=2, col=1)
+                fill='tozeroy'
+            ))
             
-            # Note: Multiple fills might look messy, but acceptable for comparison.
+        fig_win.update_layout(
+            title=f'⚖️ 2. Winning Chart (Difference vs Main)',
+            xaxis_title='Date', yaxis_title='Diff ($)',
+            template='plotly_white', hovermode='x unified',
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        st.plotly_chart(fig_win, use_container_width=True)
     else:
-        fig.add_annotation(text="Add comparison assets to see winning chart", xref="x2", yref="y2", x=main_df.index[len(main_df)//2], y=0, showarrow=False)
+        st.info("ℹ️ Add comparison assets to view the 'Winning Chart'.")
 
-    # --- Row 3: Drawdown ---
+    # --- 3. Drawdown Chart ---
+    fig_dd = go.Figure()
+    
     # Main
-    fig.add_trace(go.Scatter(
+    fig_dd.add_trace(go.Scatter(
         x=main_df.index, y=main_df['Drawdown'] * 100,
         mode='lines', name=f'{main_ticker} MDD',
-        line=dict(color='red', width=1.0),
-        legendgroup='g3'
-    ), row=3, col=1)
+        line=dict(color='red', width=1.0)
+    ))
     
     # Comps
     for idx, ticker in enumerate(comp_tickers):
         color = colors[idx % len(colors)]
         comp_df = results_dict[ticker]
-        fig.add_trace(go.Scatter(
+        fig_dd.add_trace(go.Scatter(
             x=comp_df.index, y=comp_df['Drawdown'] * 100,
             mode='lines', name=f'{ticker} MDD',
-            line=dict(color=color, width=1.0),
-            legendgroup='g3'
-        ), row=3, col=1)
-
-    # --- Synchronization ---
-    fig.update_layout(
-        height=900,
-        template='plotly_white',
-        hovermode='x unified', 
-        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1)
+            line=dict(color=color, width=1.0)
+        ))
+        
+    fig_dd.update_layout(
+        title='🌊 3. Drawdown Comparison (%)',
+        xaxis_title='Date', yaxis_title='Drawdown (%)',
+        template='plotly_white', hovermode='x unified',
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
-
-    fig.update_xaxes(
-        showspikes=True, spikemode='across', spikesnap='cursor',
-        showline=True, showgrid=True, matches='x'
-    )
-    
-    fig.update_yaxes(type=y_axis_type, row=1, col=1)
-    fig.update_yaxes(title_text="Value ($)", row=1, col=1)
-    fig.update_yaxes(title_text="Diff ($)", row=2, col=1)
-    fig.update_yaxes(title_text="MDD (%)", row=3, col=1)
-
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig_dd, use_container_width=True)
 
 # ---------------------------------------------------------
 # 6. Main Execution
 # ---------------------------------------------------------
 with st.spinner(f'Processing Simulation...'):
-    # 1. Fetch All Data Needed
     tickers_to_fetch = [main_ticker] + comp_tickers
-    
-    # Fetch all data in one go (optimized)
     data_all = get_data_multi(tickers_to_fetch, start_date, end_date)
     
     results = {}
     
     if not data_all.empty and main_ticker in data_all.columns:
         
-        # Run Backtest for Main
+        # Backtest Main
         res_main = run_dca_backtest(data_all[main_ticker], initial_capital, recurring_amount, frequency)
         if res_main is not None:
             results[main_ticker] = res_main
         
-        # Run Backtest for Comps
+        # Backtest Comps
         for t in comp_tickers:
             if t in data_all.columns:
                 res = run_dca_backtest(data_all[t], initial_capital, recurring_amount, frequency)
                 if res is not None:
-                    # Align dates with Main if needed (simple reindex)
                     res = res.reindex(results[main_ticker].index).ffill()
                     results[t] = res
 
@@ -343,25 +314,24 @@ with st.spinner(f'Processing Simulation...'):
         if main_ticker in results:
             st.success(f"Simulation Complete: {main_ticker} vs {len(comp_tickers)} assets")
             
-            # 1. Main Asset Metrics (Full Width or Prominent)
+            # Main Metrics
             display_metrics_block(calculate_metrics(results[main_ticker]), f"Main: {main_ticker}", "🟦")
             
-            # 2. Comparison Assets Metrics (Grid Layout)
+            # Comp Metrics
             if comp_tickers:
                 st.markdown("---")
                 st.subheader("🆚 Comparison Assets Performance")
-                # Create rows of 2 cols
                 cols = st.columns(2)
                 for i, t in enumerate(comp_tickers):
                     if t in results:
                         with cols[i % 2]:
                             display_metrics_block(calculate_metrics(results[t]), f"Comp {i+1}: {t}", "🟧")
-                            st.markdown("---") # Separator inside column
+                            st.markdown("---") 
 
             st.markdown("---")
             
-            # 3. Synced Charts
-            plot_charts_synced_multi(results, main_ticker, use_log_scale)
+            # Separated Charts
+            plot_charts_separated(results, main_ticker, use_log_scale)
             
             with st.expander("View Detailed Data (Main Asset)"):
                 st.dataframe(results[main_ticker][['Close', 'Total_Invested', 'Portfolio_Value', 'Drawdown']].style.format("{:.2f}"))
@@ -369,4 +339,4 @@ with st.spinner(f'Processing Simulation...'):
         else:
             st.error("Failed to process Main Asset data.")
     else:
-        st.error("Failed to fetch data. Check tickers or date range.")
+        st.error("Failed to fetch data.")
