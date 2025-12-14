@@ -11,6 +11,7 @@ from datetime import datetime
 # ---------------------------------------------------------
 st.set_page_config(page_title="DCA Backtest Simulator", layout="wide")
 
+# Metrics Font Size Adjustment
 st.markdown("""
     <style>
     [data-testid="stMetricValue"] {
@@ -41,7 +42,7 @@ common_tickers = [
 ]
 
 # ---------------------------------------------------------
-# 3. Sidebar Inputs (Real-time)
+# 3. Sidebar Inputs
 # ---------------------------------------------------------
 with st.sidebar:
     st.header("⚙️ Settings")
@@ -85,19 +86,17 @@ with st.sidebar:
     use_log_scale = st.checkbox("Use Log Scale (Portfolio Value)", value=False)
 
 # ---------------------------------------------------------
-# 4. Data & Calculation Functions
+# 4. Data Functions
 # ---------------------------------------------------------
 @st.cache_data
 def get_data(ticker, start, end):
     try:
         df = yf.download(ticker, start=start, end=end, progress=False)
-        if df.empty:
-            return None
+        if df.empty: return None
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         return df[['Close']]
-    except Exception as e:
-        return None
+    except: return None
 
 def generate_leveraged_data(df_base, leverage):
     df_sim = df_base.copy()
@@ -112,8 +111,7 @@ def run_dca_backtest(df, initial_cap, recurring_amt, freq):
     df['Daily_Return'] = df['Close'].pct_change().fillna(0)
     df['Contribution_Day'] = False
     
-    if freq == 'Daily':
-        df['Contribution_Day'] = True
+    if freq == 'Daily': df['Contribution_Day'] = True
     elif freq == 'Weekly':
         df['Week_Num'] = df.index.isocalendar().week
         df['Year_Num'] = df.index.isocalendar().year
@@ -128,19 +126,15 @@ def run_dca_backtest(df, initial_cap, recurring_amt, freq):
     closes = df['Close'].values
     is_contrib = df['Contribution_Day'].values
     
-    current_shares_arr = []
-    total_invested_arr = []
-    
     curr_sh = initial_cap / closes[0]
     tot_inv = initial_cap
+    current_shares_arr, total_invested_arr = [], []
     
     for i in range(len(df)):
-        price = closes[i]
         if is_contrib[i]:
-            new_shares = recurring_amt / price
+            new_shares = recurring_amt / closes[i]
             curr_sh += new_shares
             tot_inv += recurring_amt
-            
         current_shares_arr.append(curr_sh)
         total_invested_arr.append(tot_inv)
         
@@ -157,16 +151,14 @@ def calculate_metrics(df):
     end_price = df['Close'].iloc[-1]
     days = (df.index[-1] - df.index[0]).days
     cagr = ((end_price / start_price) ** (365.25 / days) - 1) * 100 if days > 0 else 0.0
-
     volatility = df['Daily_Return'].std() * np.sqrt(252) * 100
-
     mean_return = df['Daily_Return'].mean()
     std_return = df['Daily_Return'].std()
     sharpe = (mean_return / std_return) * np.sqrt(252) if std_return != 0 else 0.0
-
-    negative_returns = df.loc[df['Daily_Return'] < 0, 'Daily_Return']
-    downside_std = negative_returns.std()
-    sortino = (mean_return * 252) / (downside_std * np.sqrt(252)) if downside_std != 0 else 0.0
+    
+    neg_ret = df.loc[df['Daily_Return'] < 0, 'Daily_Return']
+    down_std = neg_ret.std()
+    sortino = (mean_return * 252) / (down_std * np.sqrt(252)) if down_std != 0 else 0.0
     
     final_val = df['Portfolio_Value'].iloc[-1]
     total_inv = df['Total_Invested'].iloc[-1]
@@ -175,15 +167,9 @@ def calculate_metrics(df):
     max_dd = df['Drawdown'].min() * 100
 
     return {
-        "final_val": final_val,
-        "total_inv": total_inv,
-        "profit": profit,
-        "ret_pct": ret_pct,
-        "max_dd": max_dd,
-        "cagr": cagr,
-        "vol": volatility,
-        "sharpe": sharpe,
-        "sortino": sortino
+        "final_val": final_val, "total_inv": total_inv, "profit": profit,
+        "ret_pct": ret_pct, "max_dd": max_dd, "cagr": cagr,
+        "vol": volatility, "sharpe": sharpe, "sortino": sortino
     }
 
 def display_metrics_block(metrics, title, color_bar):
@@ -193,119 +179,113 @@ def display_metrics_block(metrics, title, color_bar):
         st.metric("Final Value", f"${metrics['final_val']:,.0f}", help="최종 자산 평가액입니다.")
         st.metric("Total Profit", f"${metrics['profit']:,.0f} ({metrics['ret_pct']:.1f}%)", help="총 순이익금과 수익률입니다.")
         st.metric("Asset CAGR", f"{metrics['cagr']:.2f}%", help="연평균 성장률(복리)입니다.")
-        st.metric("Sharpe Ratio", f"{metrics['sharpe']:.2f}", help="샤프 지수 (위험 대비 수익률). 보통 1.0 이상이면 좋고, 높을수록 훌륭한 전략입니다.")
+        st.metric("Sharpe Ratio", f"{metrics['sharpe']:.2f}", help="샤프 지수 (위험 대비 수익률). 1.0 이상이면 우수.")
     with c2:
         st.metric("Total Invested", f"${metrics['total_inv']:,.0f}", help="총 투자된 원금입니다.")
         st.metric("Max Drawdown", f"{metrics['max_dd']:.2f}%", help="최고점 대비 최대 하락폭(MDD)입니다.")
-        st.metric("Volatility", f"{metrics['vol']:.2f}%", help="연간 변동성입니다. 수치가 높을수록 가격 등락이 심합니다.")
-        st.metric("Sortino Ratio", f"{metrics['sortino']:.2f}", help="소티노 지수. 하락 변동성(손실 위험)만 고려한 수익 효율성 지표입니다.")
+        st.metric("Volatility", f"{metrics['vol']:.2f}%", help="연간 변동성입니다.")
+        st.metric("Sortino Ratio", f"{metrics['sortino']:.2f}", help="소티노 지수 (하락 위험 대비 수익률).")
 
 # ---------------------------------------------------------
-# 5. Synchronized Plotting Function (Refined)
+# 5. Perfect Sync Chart Function
 # ---------------------------------------------------------
 def plot_charts_synced(df_main, df_comp, name_main, name_comp, log_scale):
     y_axis_type = "log" if log_scale else "linear"
     has_comp = df_comp is not None
     
-    # Subplots with Shared X-Axis
+    # 1. Create Subplots with SHARED X-AXIS
+    # vertical_spacing reduced to bring charts closer
     fig = make_subplots(
         rows=3, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.05,
+        shared_xaxes=True, 
+        vertical_spacing=0.03,
         subplot_titles=(
             '💰 Portfolio Value',
-            f'⚖️ Winning (Diff: {name_main} - {name_comp})' if has_comp else 'Winning Chart (No Comp)',
+            f'⚖️ Winning (Diff: {name_main} - {name_comp})' if has_comp else 'Winning Chart',
             '🌊 Drawdown (%)'
         ),
-        row_heights=[0.4, 0.3, 0.3]
+        row_heights=[0.5, 0.25, 0.25]
     )
 
-    # --- ROW 1: Portfolio Value ---
+    # --- Row 1: Value ---
     fig.add_trace(go.Scatter(
         x=df_main.index, y=df_main['Portfolio_Value'],
-        mode='lines', name=f'{name_main} Val',
-        line=dict(color='red', width=1.5),
-        legendgroup='g1'
+        mode='lines', name=f'{name_main}',
+        line=dict(color='red', width=1.5)
     ), row=1, col=1)
-    
+
     if has_comp:
         fig.add_trace(go.Scatter(
             x=df_comp.index, y=df_comp['Portfolio_Value'],
-            mode='lines', name=f'{name_comp} Val',
-            line=dict(color='orange', width=1.5),
-            legendgroup='g1'
+            mode='lines', name=f'{name_comp}',
+            line=dict(color='orange', width=1.5)
         ), row=1, col=1)
 
     fig.add_trace(go.Scatter(
         x=df_main.index, y=df_main['Total_Invested'],
-        mode='lines', name='Total Invested',
-        line=dict(color='gray', width=1.0, dash='dash'),
-        legendgroup='g1'
+        mode='lines', name='Invested',
+        line=dict(color='gray', width=1.0, dash='dash')
     ), row=1, col=1)
 
-    # --- ROW 2: Winning Chart ---
+    # --- Row 2: Winning ---
     if has_comp:
-        diff_value = df_main['Portfolio_Value'] - df_comp['Portfolio_Value']
-        pos_part = diff_value.apply(lambda x: x if x > 0 else 0)
-        neg_part = diff_value.apply(lambda x: x if x < 0 else 0)
+        diff = df_main['Portfolio_Value'] - df_comp['Portfolio_Value']
+        pos = diff.apply(lambda x: x if x > 0 else 0)
+        neg = diff.apply(lambda x: x if x < 0 else 0)
         
         fig.add_trace(go.Scatter(
-            x=diff_value.index, y=pos_part,
+            x=diff.index, y=pos,
             mode='lines', name=f'{name_main} Lead',
             fill='tozeroy', fillcolor='rgba(0, 200, 0, 0.3)',
-            line=dict(color='green', width=0.5),
-            legendgroup='g2'
+            line=dict(color='green', width=0.5)
         ), row=2, col=1)
         
         fig.add_trace(go.Scatter(
-            x=diff_value.index, y=neg_part,
+            x=diff.index, y=neg,
             mode='lines', name=f'{name_comp} Lead',
             fill='tozeroy', fillcolor='rgba(200, 0, 0, 0.3)',
-            line=dict(color='red', width=0.5),
-            legendgroup='g2'
+            line=dict(color='red', width=0.5)
         ), row=2, col=1)
     else:
         fig.add_annotation(text="Select Comparison Asset", xref="x2", yref="y2", x=df_main.index[len(df_main)//2], y=0, showarrow=False)
 
-    # --- ROW 3: Drawdown ---
+    # --- Row 3: Drawdown ---
     fig.add_trace(go.Scatter(
         x=df_main.index, y=df_main['Drawdown'] * 100,
-        mode='lines', name=f'{name_main} DD',
+        mode='lines', name=f'{name_main} MDD',
         fill='tozeroy',
-        line=dict(color='blue', width=1.0),
-        legendgroup='g3'
+        line=dict(color='blue', width=1.0)
     ), row=3, col=1)
     
     if has_comp:
         fig.add_trace(go.Scatter(
             x=df_comp.index, y=df_comp['Drawdown'] * 100,
-            mode='lines', name=f'{name_comp} DD',
-            line=dict(color='orange', width=1.0),
-            legendgroup='g3'
+            mode='lines', name=f'{name_comp} MDD',
+            line=dict(color='orange', width=1.0)
         ), row=3, col=1)
 
-    # --- Layout Updates for Synchronization ---
+    # --- CRITICAL: Synchronization Settings ---
+    # 1. hovermode='x unified': Shows ALL data points for the shared X in one tooltip
+    # 2. spikemode='across': Draws the vertical line across ALL subplots
     fig.update_layout(
         height=900,
         template='plotly_white',
-        hovermode='x unified',  # 이 설정이 가장 중요 (모든 서브플롯의 정보를 한 번에 표시)
-        legend=dict(tracegroupgap=20)
+        hovermode='x unified', 
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1)
     )
-    
-    # x축 전체에 대해 스파이크(세로선) 설정 적용
+
+    # Force Spike lines on all X-axes
     fig.update_xaxes(
         showspikes=True,
         spikemode='across',
         spikesnap='cursor',
         showline=True,
         showgrid=True,
-        matches='x' # 모든 x축을 하나로 묶음 (줌/팬 동기화)
+        matches='x' # Forces Zoom/Pan sync
     )
     
-    # Log Scale (Row 1 Only)
+    # Y-Axis Settings
     fig.update_yaxes(type=y_axis_type, row=1, col=1)
-    
-    # Labels
     fig.update_yaxes(title_text="Value ($)", row=1, col=1)
     fig.update_yaxes(title_text="Diff ($)", row=2, col=1)
     fig.update_yaxes(title_text="MDD (%)", row=3, col=1)
@@ -317,12 +297,9 @@ def plot_charts_synced(df_main, df_comp, name_main, name_comp, log_scale):
 # ---------------------------------------------------------
 with st.spinner(f'Processing Simulation...'):
     df_main = get_data(selected_ticker, start_date, end_date)
-    
     df_comp = None
-    res_comp = None
     
     if df_main is not None and not df_main.empty:
-        
         if use_simulation:
             df_comp = generate_leveraged_data(df_main, leverage_ratio)
         elif comparison_ticker != "None":
@@ -333,8 +310,8 @@ with st.spinner(f'Processing Simulation...'):
                 if df_comp_raw is not None and not df_comp_raw.empty:
                     df_comp = df_comp_raw.reindex(df_main.index).ffill().dropna()
                 else:
-                    st.warning(f"Could not fetch data for {comparison_ticker}. Comparison skipped.")
-        
+                    st.warning(f"Skipping comparison: No data for {comparison_ticker}")
+
         res_main = run_dca_backtest(df_main, initial_capital, recurring_amount, frequency)
         metrics_main = calculate_metrics(res_main)
         
@@ -345,22 +322,18 @@ with st.spinner(f'Processing Simulation...'):
             st.success(f"Simulation Complete: {selected_ticker} vs {comp_label_final}")
         else:
             st.success(f"Simulation Complete: {selected_ticker}")
-            
+
         if metrics_comp:
-            main_col, comp_col = st.columns(2)
-            with main_col:
-                display_metrics_block(metrics_main, f"Main: {selected_ticker}", "🟦")
-            with comp_col:
-                display_metrics_block(metrics_comp, f"Comp: {comp_label_final}", "🟧")
+            c1, c2 = st.columns(2)
+            with c1: display_metrics_block(metrics_main, f"Main: {selected_ticker}", "🟦")
+            with c2: display_metrics_block(metrics_comp, f"Comp: {comp_label_final}", "🟧")
         else:
             display_metrics_block(metrics_main, f"Main: {selected_ticker}", "🟦")
 
         st.markdown("---")
-        
         plot_charts_synced(res_main, res_comp, selected_ticker, comp_label_final, use_log_scale)
         
-        with st.expander("View Detailed Data (Main Asset)"):
-            st.dataframe(res_main[['Close', 'Total_Invested', 'Portfolio_Value', 'Drawdown']].style.format("{:.2f}"))
-
+        with st.expander("View Data"):
+            st.dataframe(res_main.style.format("{:.2f}"))
     else:
-        st.error("Failed to fetch data for Main Asset. Please check the ticker or date range.")
+        st.error("No data found.")
