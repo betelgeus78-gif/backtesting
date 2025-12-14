@@ -35,7 +35,7 @@ common_tickers = [
     "GOOGL", "META", "NFLX",                    # (엔터를 쳐서 줄바꿈 해도 됩니다)
     "TLT", "TMF", "TMV",                        # 채권
     "BULZ", "TECL", "FNGU", "WEBL",             # 님께서 추가하고 싶은 티커들!
-    "COIN", "MSTR", "BITX", "MSTU"              # 코인 관련
+    "COIN", "MSTR", "BITX", "MSTU",             # 코인 관련
     "BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD"     # 암호화폐 관련
 ]
 
