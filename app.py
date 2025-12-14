@@ -39,9 +39,29 @@ common_tickers = [
 with st.sidebar:
     st.header("⚙️ Settings")
     
-    # Ticker Selection
-    selected_ticker = st.selectbox("Select Asset", common_tickers, index=0)
+    # --- Main Asset ---
+    selected_ticker = st.selectbox("Select Asset (Main)", common_tickers, index=0)
     
+    st.markdown("---")
+    
+    # --- Comparison Asset Settings ---
+    st.subheader("🆚 Comparison Settings")
+    
+    # Simulate Leverage Checkbox
+    use_simulation = st.checkbox("Simulate Leverage (Daily Rebalancing)", value=False)
+    
+    if use_simulation:
+        # If checked: Show leverage slider, Hide/Disable ticker selector effectively
+        comparison_ticker = None
+        leverage_ratio = st.number_input("Target Leverage (1.0x ~ 5.0x)", min_value=1.0, max_value=5.0, value=2.0, step=0.1)
+        comp_label_final = f"Simulated {leverage_ratio:.1f}x ({selected_ticker})"
+    else:
+        # If unchecked: Show ticker selector
+        comparison_ticker = st.selectbox("Select Comparison Asset", common_tickers, index=1)
+        comp_label_final = comparison_ticker
+
+    st.markdown("---")
+
     # Date Range
     col1, col2 = st.columns(2)
     with col1:
@@ -76,12 +96,29 @@ def get_data(ticker, start, end):
         df = yf.download(ticker, start=start, end=end, progress=False)
         if df.empty:
             return None
-        # Handle MultiIndex columns
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         return df[['Close']]
     except Exception as e:
         return None
+
+def generate_leveraged_data(df_base, leverage):
+    """
+    Generates a synthetic price path based on daily rebalancing leverage.
+    """
+    df_sim = df_base.copy()
+    # Calculate daily returns of the base asset
+    df_sim['Base_Return'] = df_sim['Close'].pct_change().fillna(0)
+    
+    # Apply leverage to returns (approximation of daily rebalancing ETF)
+    # Note: Subtracting borrowing costs or expense ratios is omitted for simplicity
+    df_sim['Sim_Return'] = df_sim['Base_Return'] * leverage
+    
+    # Reconstruct Price Path (Start from the same initial price as base for comparison)
+    start_price = df_sim['Close'].iloc[0]
+    df_sim['Close'] = start_price * (1 + df_sim['Sim_Return']).cumprod()
+    
+    return df_sim[['Close']] # Return structure matching get_data
 
 def run_dca_backtest(df, initial_cap, recurring_amt, freq):
     df = df.copy()
@@ -92,7 +129,7 @@ def run_dca_backtest(df, initial_cap, recurring_amt, freq):
     # Initialize simulation columns
     df['Contribution_Day'] = False
     
-    # Setup resampling rule based on frequency
+    # Setup resampling rule
     if freq == 'Daily':
         df['Contribution_Day'] = True
     elif freq == 'Weekly':
@@ -106,7 +143,7 @@ def run_dca_backtest(df, initial_cap, recurring_amt, freq):
         contribution_indices = df.groupby(['Year_Num', 'Month_Num']).head(1).index
         df.loc[contribution_indices, 'Contribution_Day'] = True
 
-    # Fast Iteration for DCA
+    # Fast Iteration
     closes = df['Close'].values
     is_contrib = df['Contribution_Day'].values
     
@@ -118,7 +155,6 @@ def run_dca_backtest(df, initial_cap, recurring_amt, freq):
     
     for i in range(len(df)):
         price = closes[i]
-        
         if is_contrib[i]:
             new_shares = recurring_amt / price
             curr_sh += new_shares
@@ -131,28 +167,24 @@ def run_dca_backtest(df, initial_cap, recurring_amt, freq):
     df['Total_Invested'] = total_invested_arr
     df['Portfolio_Value'] = df['Holdings_Shares'] * df['Close']
     
-    # Drawdown Calculation
+    # Drawdown
     df['Peak'] = df['Portfolio_Value'].cummax()
     df['Drawdown'] = (df['Portfolio_Value'] - df['Peak']) / df['Peak']
     
     return df
 
 def calculate_metrics(df):
-    # 1. CAGR (Asset Price Growth)
     start_price = df['Close'].iloc[0]
     end_price = df['Close'].iloc[-1]
     days = (df.index[-1] - df.index[0]).days
     cagr = ((end_price / start_price) ** (365.25 / days) - 1) * 100 if days > 0 else 0.0
 
-    # 2. Volatility (Annualized)
     volatility = df['Daily_Return'].std() * np.sqrt(252) * 100
 
-    # 3. Sharpe Ratio (Annualized)
     mean_return = df['Daily_Return'].mean()
     std_return = df['Daily_Return'].std()
     sharpe = (mean_return / std_return) * np.sqrt(252) if std_return != 0 else 0.0
 
-    # 4. Sortino Ratio (Annualized) - Downside Risk only
     negative_returns = df.loc[df['Daily_Return'] < 0, 'Daily_Return']
     downside_std = negative_returns.std()
     sortino = (mean_return * 252) / (downside_std * np.sqrt(252)) if downside_std != 0 else 0.0
@@ -160,74 +192,89 @@ def calculate_metrics(df):
     return cagr, volatility, sharpe, sortino
 
 # ---------------------------------------------------------
-# 5. Plotting Function
+# 5. Plotting Function (Modified for Comparison)
 # ---------------------------------------------------------
-def plot_dca_charts(df, ticker, log_scale):
+def plot_comparison_charts(df_main, df_comp, name_main, name_comp, log_scale):
     y_axis_type = "log" if log_scale else "linear"
     
     # --- 1. Asset Price Chart ---
     fig_price = go.Figure()
+    # Main Asset
     fig_price.add_trace(go.Scatter(
-        x=df.index, y=df['Close'],
-        mode='lines',
-        name=f'{ticker} Price',
-        line=dict(color='black', width=1.0)
+        x=df_main.index, y=df_main['Close'],
+        mode='lines', name=f'{name_main} Price',
+        line=dict(color='black', width=1.5)
     ))
+    # Comparison Asset
+    fig_price.add_trace(go.Scatter(
+        x=df_comp.index, y=df_comp['Close'],
+        mode='lines', name=f'{name_comp} Price',
+        line=dict(color='orange', width=1.5, dash='solid')
+    ))
+    
     fig_price.update_layout(
-        title=f'📊 1. Asset Price Chart ({ticker})',
-        xaxis_title='Date',
-        yaxis_title='Price ($)',
-        yaxis_type=y_axis_type,
-        template='plotly_white',
-        hovermode='x unified'
+        title=f'📊 1. Asset Price Comparison',
+        xaxis_title='Date', yaxis_title='Price ($)',
+        yaxis_type=y_axis_type, template='plotly_white', hovermode='x unified',
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     st.plotly_chart(fig_price, use_container_width=True)
 
     # --- 2. Portfolio Value Chart ---
     fig_value = go.Figure()
     
-    # Portfolio Value
+    # Main Portfolio
     fig_value.add_trace(go.Scatter(
-        x=df.index, y=df['Portfolio_Value'],
-        mode='lines',
-        name='Portfolio Value',
-        line=dict(color='red', width=1.0)
+        x=df_main.index, y=df_main['Portfolio_Value'],
+        mode='lines', name=f'{name_main} Portfolio',
+        line=dict(color='red', width=1.5)
     ))
     
-    # Total Invested
+    # Comparison Portfolio
     fig_value.add_trace(go.Scatter(
-        x=df.index, y=df['Total_Invested'],
-        mode='lines',
-        name='Total Invested',
+        x=df_comp.index, y=df_comp['Portfolio_Value'],
+        mode='lines', name=f'{name_comp} Portfolio',
+        line=dict(color='orange', width=1.5)
+    ))
+
+    # Total Invested (Common Principal) - only showing one as they are same amount
+    fig_value.add_trace(go.Scatter(
+        x=df_main.index, y=df_main['Total_Invested'],
+        mode='lines', name='Total Invested (Principal)',
         line=dict(color='gray', width=1.0, dash='dash')
     ))
 
     fig_value.update_layout(
-        title=f'💰 2. Portfolio Value (Accumulated)',
-        xaxis_title='Date',
-        yaxis_title='Value ($)',
-        yaxis_type=y_axis_type,
-        template='plotly_white',
-        hovermode='x unified',
+        title=f'💰 2. Portfolio Value Comparison',
+        xaxis_title='Date', yaxis_title='Value ($)',
+        yaxis_type=y_axis_type, template='plotly_white', hovermode='x unified',
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     st.plotly_chart(fig_value, use_container_width=True)
 
     # --- 3. Drawdown Chart ---
     fig_dd = go.Figure()
+    
+    # Main Drawdown
     fig_dd.add_trace(go.Scatter(
-        x=df.index, y=df['Drawdown'] * 100,
-        mode='lines',
-        name='Drawdown',
-        fill='tozeroy',
+        x=df_main.index, y=df_main['Drawdown'] * 100,
+        mode='lines', name=f'{name_main} DD',
+        fill='tozeroy', # Fill only for main to avoid mess
         line=dict(color='blue', width=1.0)
     ))
+    
+    # Comparison Drawdown
+    fig_dd.add_trace(go.Scatter(
+        x=df_comp.index, y=df_comp['Drawdown'] * 100,
+        mode='lines', name=f'{name_comp} DD',
+        line=dict(color='orange', width=1.0)
+    ))
+    
     fig_dd.update_layout(
-        title='🌊 3. Drawdown (%)',
-        xaxis_title='Date',
-        yaxis_title='Drawdown (%)',
-        template='plotly_white',
-        hovermode='x unified'
+        title='🌊 3. Drawdown Comparison (%)',
+        xaxis_title='Date', yaxis_title='Drawdown (%)',
+        template='plotly_white', hovermode='x unified',
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     st.plotly_chart(fig_dd, use_container_width=True)
 
@@ -235,55 +282,72 @@ def plot_dca_charts(df, ticker, log_scale):
 # 6. Main Execution
 # ---------------------------------------------------------
 if run_btn:
-    with st.spinner(f'Fetching data for {selected_ticker}...'):
-        df = get_data(selected_ticker, start_date, end_date)
+    with st.spinner(f'Processing Simulation...'):
+        # 1. Fetch Main Data
+        df_main = get_data(selected_ticker, start_date, end_date)
         
-    if df is not None and not df.empty:
-        # Run Backtest
-        df = run_dca_backtest(df, initial_capital, recurring_amount, frequency)
+        # 2. Prepare Comparison Data
+        df_comp = None
         
-        # Calculate Financial Metrics
-        final_value = df['Portfolio_Value'].iloc[-1]
-        total_invested = df['Total_Invested'].iloc[-1]
-        profit = final_value - total_invested
-        total_return_pct = (profit / total_invested) * 100
-        max_dd = df['Drawdown'].min() * 100
-        
-        # Calculate Technical Metrics
-        cagr, volatility, sharpe, sortino = calculate_metrics(df)
-        
-        st.success(f"Simulation Complete: {selected_ticker}")
-        st.markdown("### 📊 Performance Summary")
-
-        # --- Row 1: Financials ---
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Final Value", f"${final_value:,.0f}", help="최종 자산 평가액입니다.")
-        c2.metric("Total Invested", f"${total_invested:,.0f}", help="투자한 원금의 총합입니다.")
-        c3.metric("Total Profit", f"${profit:,.0f} ({total_return_pct:.1f}%)", help="순이익과 수익률입니다.")
-        c4.metric("Max Drawdown", f"{max_dd:.2f}%", help="최고점 대비 가장 많이 하락했던 비율입니다. (손실폭)")
-
-        # --- Row 2: Technical Indicators ---
-        c5, c6, c7, c8 = st.columns(4)
-        c5.metric("Asset CAGR", f"{cagr:.2f}%", 
-                  help="연평균 성장률입니다. 자산이 매년 평균적으로 얼마나 성장했는지를 나타냅니다.")
-        
-        c6.metric("Volatility", f"{volatility:.2f}%", 
-                  help="이 자산이 1년에 위아래로 평균 몇 % 움직이는지를 보여줍니다. (예: S&P500은 보통 15-20%, 비트코인은 60-80% 수준)")
-        
-        c7.metric("Sharpe Ratio", f"{sharpe:.2f}", 
-                  help="샤프 지수 (위험 대비 수익률). 보통 1.0 이상이면 좋고, 높을수록 훌륭한 전략입니다.")
-        
-        c8.metric("Sortino Ratio", f"{sortino:.2f}", 
-                  help="소티노 지수. 수치가 높을수록 손실은 적게 보면서 수익을 잘 냈다는 뜻입니다. (보통 샤프 지수보다 더 실질적인 지표로 칩니다.)")
-        
-        st.markdown("---")
-
-        # Plot Charts
-        plot_dca_charts(df, selected_ticker, use_log_scale)
-        
-        # Detailed Data
-        with st.expander("View Detailed Data"):
-            st.dataframe(df[['Close', 'Total_Invested', 'Portfolio_Value', 'Drawdown']].style.format("{:.2f}"))
+        if df_main is not None and not df_main.empty:
             
-    else:
-        st.error("Failed to fetch data. Please check the ticker or date range.")
+            # --- Logic for Comparison Data ---
+            if use_simulation:
+                # Scenario A: Synthetic Leverage
+                df_comp = generate_leveraged_data(df_main, leverage_ratio)
+            else:
+                # Scenario B: Real Asset Comparison
+                if comparison_ticker == selected_ticker:
+                    df_comp = df_main.copy() # Same asset
+                else:
+                    df_comp_raw = get_data(comparison_ticker, start_date, end_date)
+                    if df_comp_raw is not None and not df_comp_raw.empty:
+                        # Reindex to match Main Asset's dates exactly
+                        df_comp = df_comp_raw.reindex(df_main.index).ffill().dropna()
+                    else:
+                        st.warning(f"Could not fetch data for {comparison_ticker}. Comparison skipped.")
+                        df_comp = df_main.copy() # Fallback
+
+            # --- Run Backtest for BOTH ---
+            if df_comp is not None:
+                # Run Logic
+                res_main = run_dca_backtest(df_main, initial_capital, recurring_amount, frequency)
+                res_comp = run_dca_backtest(df_comp, initial_capital, recurring_amount, frequency)
+                
+                # --- Metrics for Main Asset ---
+                final_val = res_main['Portfolio_Value'].iloc[-1]
+                total_inv = res_main['Total_Invested'].iloc[-1]
+                profit = final_val - total_inv
+                ret_pct = (profit / total_inv) * 100
+                max_dd = res_main['Drawdown'].min() * 100
+                cagr, vol, sharpe, sortino = calculate_metrics(res_main)
+                
+                st.success(f"Simulation Complete: {selected_ticker} vs {comp_label_final}")
+                
+                # Show Main Asset Metrics (Simple Dashboard)
+                st.markdown(f"### 📊 Performance Summary (Main: {selected_ticker})")
+                
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Final Value", f"${final_val:,.0f}", help="최종 자산 평가액입니다.")
+                c2.metric("Total Invested", f"${total_inv:,.0f}", help="투자한 원금의 총합입니다.")
+                c3.metric("Total Profit", f"${profit:,.0f} ({ret_pct:.1f}%)", help="순이익과 수익률입니다.")
+                c4.metric("Max Drawdown", f"{max_dd:.2f}%", help="최고점 대비 가장 많이 하락했던 비율입니다.")
+
+                c5, c6, c7, c8 = st.columns(4)
+                c5.metric("Asset CAGR", f"{cagr:.2f}%", help="연평균 성장률")
+                c6.metric("Volatility", f"{vol:.2f}%", help="연간 변동성")
+                c7.metric("Sharpe Ratio", f"{sharpe:.2f}", help="위험 대비 수익률 (높을수록 좋음)")
+                c8.metric("Sortino Ratio", f"{sortino:.2f}", help="하락 위험 대비 수익률 (높을수록 좋음)")
+                
+                st.markdown("---")
+                
+                # --- Plot Comparison ---
+                plot_comparison_charts(res_main, res_comp, selected_ticker, comp_label_final, use_log_scale)
+
+                # Optional Data View
+                with st.expander("View Detailed Data (Main Asset)"):
+                    st.dataframe(res_main[['Close', 'Total_Invested', 'Portfolio_Value', 'Drawdown']].style.format("{:.2f}"))
+            else:
+                st.error("Error processing comparison data.")
+        else:
+            st.error("Failed to fetch data for Main Asset.")
