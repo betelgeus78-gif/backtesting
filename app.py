@@ -34,7 +34,7 @@ common_tickers = [
 ]
 
 # ---------------------------------------------------------
-# 3. Sidebar Inputs
+# 3. Sidebar Inputs (Run Button Removed -> Real-time)
 # ---------------------------------------------------------
 with st.sidebar:
     st.header("⚙️ Settings")
@@ -50,14 +50,19 @@ with st.sidebar:
     # Simulate Leverage Checkbox
     use_simulation = st.checkbox("Simulate Leverage (Daily Rebalancing)", value=False)
     
+    comparison_ticker = "None"
+    leverage_ratio = 1.0
+    comp_label_final = "None"
+
     if use_simulation:
-        # If checked: Show leverage slider, Hide/Disable ticker selector effectively
-        comparison_ticker = None
+        # Show leverage slider
         leverage_ratio = st.number_input("Target Leverage (1.0x ~ 5.0x)", min_value=1.0, max_value=5.0, value=2.0, step=0.1)
         comp_label_final = f"Simulated {leverage_ratio:.1f}x ({selected_ticker})"
     else:
-        # If unchecked: Show ticker selector
-        comparison_ticker = st.selectbox("Select Comparison Asset", common_tickers, index=1)
+        # Show ticker selector with "None" option
+        # Add "None" to the options list just for this selectbox
+        comp_options = ["None"] + common_tickers
+        comparison_ticker = st.selectbox("Select Comparison Asset", comp_options, index=0) # Default index 0 is "None"
         comp_label_final = comparison_ticker
 
     st.markdown("---")
@@ -83,9 +88,7 @@ with st.sidebar:
     # Chart Options
     use_log_scale = st.checkbox("Use Log Scale (Price & Portfolio)", value=False)
 
-    st.markdown("---")
-    
-    run_btn = st.button("Run Simulation 🚀")
+    # No Run Button -> Logic executes immediately below
 
 # ---------------------------------------------------------
 # 4. Data & Calculation Functions
@@ -103,22 +106,16 @@ def get_data(ticker, start, end):
         return None
 
 def generate_leveraged_data(df_base, leverage):
-    """
-    Generates a synthetic price path based on daily rebalancing leverage.
-    """
+    """Generates a synthetic price path based on daily rebalancing leverage."""
     df_sim = df_base.copy()
-    # Calculate daily returns of the base asset
     df_sim['Base_Return'] = df_sim['Close'].pct_change().fillna(0)
-    
-    # Apply leverage to returns (approximation of daily rebalancing ETF)
-    # Note: Subtracting borrowing costs or expense ratios is omitted for simplicity
     df_sim['Sim_Return'] = df_sim['Base_Return'] * leverage
     
-    # Reconstruct Price Path (Start from the same initial price as base for comparison)
+    # Reconstruct Price Path
     start_price = df_sim['Close'].iloc[0]
     df_sim['Close'] = start_price * (1 + df_sim['Sim_Return']).cumprod()
     
-    return df_sim[['Close']] # Return structure matching get_data
+    return df_sim[['Close']]
 
 def run_dca_backtest(df, initial_cap, recurring_amt, freq):
     df = df.copy()
@@ -192,10 +189,11 @@ def calculate_metrics(df):
     return cagr, volatility, sharpe, sortino
 
 # ---------------------------------------------------------
-# 5. Plotting Function (Modified for Comparison)
+# 5. Plotting Function (Handles None comparison)
 # ---------------------------------------------------------
 def plot_comparison_charts(df_main, df_comp, name_main, name_comp, log_scale):
     y_axis_type = "log" if log_scale else "linear"
+    has_comp = df_comp is not None
     
     # --- 1. Asset Price Chart ---
     fig_price = go.Figure()
@@ -206,11 +204,12 @@ def plot_comparison_charts(df_main, df_comp, name_main, name_comp, log_scale):
         line=dict(color='black', width=1.5)
     ))
     # Comparison Asset
-    fig_price.add_trace(go.Scatter(
-        x=df_comp.index, y=df_comp['Close'],
-        mode='lines', name=f'{name_comp} Price',
-        line=dict(color='orange', width=1.5, dash='solid')
-    ))
+    if has_comp:
+        fig_price.add_trace(go.Scatter(
+            x=df_comp.index, y=df_comp['Close'],
+            mode='lines', name=f'{name_comp} Price',
+            line=dict(color='orange', width=1.5, dash='solid')
+        ))
     
     fig_price.update_layout(
         title=f'📊 1. Asset Price Comparison',
@@ -231,13 +230,14 @@ def plot_comparison_charts(df_main, df_comp, name_main, name_comp, log_scale):
     ))
     
     # Comparison Portfolio
-    fig_value.add_trace(go.Scatter(
-        x=df_comp.index, y=df_comp['Portfolio_Value'],
-        mode='lines', name=f'{name_comp} Portfolio',
-        line=dict(color='orange', width=1.5)
-    ))
+    if has_comp:
+        fig_value.add_trace(go.Scatter(
+            x=df_comp.index, y=df_comp['Portfolio_Value'],
+            mode='lines', name=f'{name_comp} Portfolio',
+            line=dict(color='orange', width=1.5)
+        ))
 
-    # Total Invested (Common Principal) - only showing one as they are same amount
+    # Total Invested (Common Principal)
     fig_value.add_trace(go.Scatter(
         x=df_main.index, y=df_main['Total_Invested'],
         mode='lines', name='Total Invested (Principal)',
@@ -259,16 +259,17 @@ def plot_comparison_charts(df_main, df_comp, name_main, name_comp, log_scale):
     fig_dd.add_trace(go.Scatter(
         x=df_main.index, y=df_main['Drawdown'] * 100,
         mode='lines', name=f'{name_main} DD',
-        fill='tozeroy', # Fill only for main to avoid mess
+        fill='tozeroy',
         line=dict(color='blue', width=1.0)
     ))
     
     # Comparison Drawdown
-    fig_dd.add_trace(go.Scatter(
-        x=df_comp.index, y=df_comp['Drawdown'] * 100,
-        mode='lines', name=f'{name_comp} DD',
-        line=dict(color='orange', width=1.0)
-    ))
+    if has_comp:
+        fig_dd.add_trace(go.Scatter(
+            x=df_comp.index, y=df_comp['Drawdown'] * 100,
+            mode='lines', name=f'{name_comp} DD',
+            line=dict(color='orange', width=1.0)
+        ))
     
     fig_dd.update_layout(
         title='🌊 3. Drawdown Comparison (%)',
@@ -279,75 +280,78 @@ def plot_comparison_charts(df_main, df_comp, name_main, name_comp, log_scale):
     st.plotly_chart(fig_dd, use_container_width=True)
 
 # ---------------------------------------------------------
-# 6. Main Execution
+# 6. Main Execution (Real-time)
 # ---------------------------------------------------------
-if run_btn:
-    with st.spinner(f'Processing Simulation...'):
-        # 1. Fetch Main Data
-        df_main = get_data(selected_ticker, start_date, end_date)
+# Spinner runs immediately on every rerun
+with st.spinner(f'Processing Simulation...'):
+    # 1. Fetch Main Data
+    df_main = get_data(selected_ticker, start_date, end_date)
+    
+    # 2. Prepare Comparison Data
+    df_comp = None
+    res_comp = None
+    
+    if df_main is not None and not df_main.empty:
         
-        # 2. Prepare Comparison Data
-        df_comp = None
-        
-        if df_main is not None and not df_main.empty:
-            
-            # --- Logic for Comparison Data ---
-            if use_simulation:
-                # Scenario A: Synthetic Leverage
-                df_comp = generate_leveraged_data(df_main, leverage_ratio)
+        # --- Logic for Comparison Data ---
+        if use_simulation:
+            # Scenario A: Synthetic Leverage
+            df_comp = generate_leveraged_data(df_main, leverage_ratio)
+        elif comparison_ticker != "None":
+            # Scenario B: Real Asset Comparison
+            if comparison_ticker == selected_ticker:
+                df_comp = df_main.copy()
             else:
-                # Scenario B: Real Asset Comparison
-                if comparison_ticker == selected_ticker:
-                    df_comp = df_main.copy() # Same asset
+                df_comp_raw = get_data(comparison_ticker, start_date, end_date)
+                if df_comp_raw is not None and not df_comp_raw.empty:
+                    # Reindex to match Main Asset's dates exactly
+                    df_comp = df_comp_raw.reindex(df_main.index).ffill().dropna()
                 else:
-                    df_comp_raw = get_data(comparison_ticker, start_date, end_date)
-                    if df_comp_raw is not None and not df_comp_raw.empty:
-                        # Reindex to match Main Asset's dates exactly
-                        df_comp = df_comp_raw.reindex(df_main.index).ffill().dropna()
-                    else:
-                        st.warning(f"Could not fetch data for {comparison_ticker}. Comparison skipped.")
-                        df_comp = df_main.copy() # Fallback
-
-            # --- Run Backtest for BOTH ---
-            if df_comp is not None:
-                # Run Logic
-                res_main = run_dca_backtest(df_main, initial_capital, recurring_amount, frequency)
-                res_comp = run_dca_backtest(df_comp, initial_capital, recurring_amount, frequency)
-                
-                # --- Metrics for Main Asset ---
-                final_val = res_main['Portfolio_Value'].iloc[-1]
-                total_inv = res_main['Total_Invested'].iloc[-1]
-                profit = final_val - total_inv
-                ret_pct = (profit / total_inv) * 100
-                max_dd = res_main['Drawdown'].min() * 100
-                cagr, vol, sharpe, sortino = calculate_metrics(res_main)
-                
-                st.success(f"Simulation Complete: {selected_ticker} vs {comp_label_final}")
-                
-                # Show Main Asset Metrics (Simple Dashboard)
-                st.markdown(f"### 📊 Performance Summary (Main: {selected_ticker})")
-                
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Final Value", f"${final_val:,.0f}", help="최종 자산 평가액입니다.")
-                c2.metric("Total Invested", f"${total_inv:,.0f}", help="투자한 원금의 총합입니다.")
-                c3.metric("Total Profit", f"${profit:,.0f} ({ret_pct:.1f}%)", help="순이익과 수익률입니다.")
-                c4.metric("Max Drawdown", f"{max_dd:.2f}%", help="최고점 대비 가장 많이 하락했던 비율입니다.")
-
-                c5, c6, c7, c8 = st.columns(4)
-                c5.metric("Asset CAGR", f"{cagr:.2f}%", help="연평균 성장률")
-                c6.metric("Volatility", f"{vol:.2f}%", help="연간 변동성")
-                c7.metric("Sharpe Ratio", f"{sharpe:.2f}", help="위험 대비 수익률 (높을수록 좋음)")
-                c8.metric("Sortino Ratio", f"{sortino:.2f}", help="하락 위험 대비 수익률 (높을수록 좋음)")
-                
-                st.markdown("---")
-                
-                # --- Plot Comparison ---
-                plot_comparison_charts(res_main, res_comp, selected_ticker, comp_label_final, use_log_scale)
-
-                # Optional Data View
-                with st.expander("View Detailed Data (Main Asset)"):
-                    st.dataframe(res_main[['Close', 'Total_Invested', 'Portfolio_Value', 'Drawdown']].style.format("{:.2f}"))
-            else:
-                st.error("Error processing comparison data.")
+                    st.warning(f"Could not fetch data for {comparison_ticker}. Comparison skipped.")
+        
+        # --- Run Backtest for Main ---
+        res_main = run_dca_backtest(df_main, initial_capital, recurring_amount, frequency)
+        
+        # --- Run Backtest for Comp (if exists) ---
+        if df_comp is not None:
+            res_comp = run_dca_backtest(df_comp, initial_capital, recurring_amount, frequency)
+            
+        # --- Metrics for Main Asset ---
+        final_val = res_main['Portfolio_Value'].iloc[-1]
+        total_inv = res_main['Total_Invested'].iloc[-1]
+        profit = final_val - total_inv
+        ret_pct = (profit / total_inv) * 100
+        max_dd = res_main['Drawdown'].min() * 100
+        cagr, vol, sharpe, sortino = calculate_metrics(res_main)
+        
+        if res_comp is not None:
+            st.success(f"Simulation Complete: {selected_ticker} vs {comp_label_final}")
         else:
-            st.error("Failed to fetch data for Main Asset.")
+            st.success(f"Simulation Complete: {selected_ticker}")
+            
+        # Show Main Asset Metrics
+        st.markdown(f"### 📊 Performance Summary (Main: {selected_ticker})")
+        
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Final Value", f"${final_val:,.0f}", help="최종 자산 평가액입니다.")
+        c2.metric("Total Invested", f"${total_inv:,.0f}", help="투자한 원금의 총합입니다.")
+        c3.metric("Total Profit", f"${profit:,.0f} ({ret_pct:.1f}%)", help="순이익과 수익률입니다.")
+        c4.metric("Max Drawdown", f"{max_dd:.2f}%", help="최고점 대비 가장 많이 하락했던 비율입니다.")
+
+        c5, c6, c7, c8 = st.columns(4)
+        c5.metric("Asset CAGR", f"{cagr:.2f}%", help="연평균 성장률")
+        c6.metric("Volatility", f"{vol:.2f}%", help="연간 변동성")
+        c7.metric("Sharpe Ratio", f"{sharpe:.2f}", help="위험 대비 수익률 (높을수록 좋음)")
+        c8.metric("Sortino Ratio", f"{sortino:.2f}", help="하락 위험 대비 수익률 (높을수록 좋음)")
+        
+        st.markdown("---")
+        
+        # --- Plot Comparison ---
+        plot_comparison_charts(res_main, res_comp, selected_ticker, comp_label_final, use_log_scale)
+
+        # Optional Data View
+        with st.expander("View Detailed Data (Main Asset)"):
+            st.dataframe(res_main[['Close', 'Total_Invested', 'Portfolio_Value', 'Drawdown']].style.format("{:.2f}"))
+
+    else:
+        st.error("Failed to fetch data for Main Asset. Please check the ticker or date range.")
