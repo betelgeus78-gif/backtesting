@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots # 서브플롯 기능을 위해 추가
 from datetime import datetime
 
 # ---------------------------------------------------------
@@ -69,18 +70,15 @@ with st.sidebar:
     comp_label_final = "None"
 
     if use_simulation:
-        # Show leverage slider
         leverage_ratio = st.number_input("Target Leverage (1.0x ~ 5.0x)", min_value=1.0, max_value=5.0, value=2.0, step=0.1)
         comp_label_final = f"Simulated {leverage_ratio:.1f}x ({selected_ticker})"
     else:
-        # Show ticker selector with "None" option
         comp_options = ["None"] + common_tickers
         comparison_ticker = st.selectbox("Select Comparison Asset", comp_options, index=0)
         comp_label_final = comparison_ticker
 
     st.markdown("---")
 
-    # Date Range
     col1, col2 = st.columns(2)
     with col1:
         start_date = st.date_input("Start Date", datetime(2020, 1, 1))
@@ -89,16 +87,12 @@ with st.sidebar:
 
     st.markdown("---")
     
-    # Capital & Contribution
     initial_capital = st.number_input("Initial Capital ($)", value=10000, step=1000)
     recurring_amount = st.number_input("Recurring Contribution ($)", value=500, step=100)
-    
-    # Frequency
     frequency = st.selectbox("Contribution Frequency", ["Monthly", "Weekly", "Daily"], index=0)
     
     st.markdown("---")
     
-    # Chart Options
     use_log_scale = st.checkbox("Use Log Scale (Portfolio Value)", value=False)
 
 # ---------------------------------------------------------
@@ -117,14 +111,11 @@ def get_data(ticker, start, end):
         return None
 
 def generate_leveraged_data(df_base, leverage):
-    """Generates a synthetic price path based on daily rebalancing leverage."""
     df_sim = df_base.copy()
     df_sim['Base_Return'] = df_sim['Close'].pct_change().fillna(0)
     df_sim['Sim_Return'] = df_sim['Base_Return'] * leverage
-    
     start_price = df_sim['Close'].iloc[0]
     df_sim['Close'] = start_price * (1 + df_sim['Sim_Return']).cumprod()
-    
     return df_sim[['Close']]
 
 def run_dca_backtest(df, initial_cap, recurring_amt, freq):
@@ -221,134 +212,125 @@ def display_metrics_block(metrics, title, color_bar):
         st.metric("Sortino Ratio", f"{metrics['sortino']:.2f}", help="소티노 지수. 하락 변동성(손실 위험)만 고려한 수익 효율성 지표입니다.")
 
 # ---------------------------------------------------------
-# 5. Plotting Function (Refined)
+# 5. Synchronized Plotting Function (Subplots)
 # ---------------------------------------------------------
-def plot_charts(df_main, df_comp, name_main, name_comp, log_scale):
+def plot_charts_synced(df_main, df_comp, name_main, name_comp, log_scale):
     y_axis_type = "log" if log_scale else "linear"
     has_comp = df_comp is not None
     
-    # --- 1. Portfolio Value Chart ---
-    fig_value = go.Figure()
+    # Define Subplot Titles
+    titles = (
+        '💰 Portfolio Value',
+        f'⚖️ Winning (Diff: {name_main} - {name_comp})' if has_comp else 'Winning Chart (No Comp)',
+        '🌊 Drawdown (%)'
+    )
     
-    # Main Asset
-    fig_value.add_trace(go.Scatter(
-        x=df_main.index, y=df_main['Portfolio_Value'],
-        mode='lines', name=f'{name_main} Portfolio',
-        line=dict(color='red', width=1.5)
-    ))
-    
-    # Comparison Asset
-    if has_comp:
-        fig_value.add_trace(go.Scatter(
-            x=df_comp.index, y=df_comp['Portfolio_Value'],
-            mode='lines', name=f'{name_comp} Portfolio',
-            line=dict(color='orange', width=1.5)
-        ))
+    # Create Subplots with Shared X-Axis
+    fig = make_subplots(
+        rows=3, cols=1,
+        shared_xaxes=True, # Synchronize zooming and hovering
+        vertical_spacing=0.08,
+        subplot_titles=titles,
+        row_heights=[0.4, 0.3, 0.3] # Allocate more space to Value chart
+    )
 
-    # Total Invested (Common)
-    fig_value.add_trace(go.Scatter(
+    # --- ROW 1: Portfolio Value ---
+    # Main Asset
+    fig.add_trace(go.Scatter(
+        x=df_main.index, y=df_main['Portfolio_Value'],
+        mode='lines', name=f'{name_main} Val',
+        line=dict(color='red', width=1.5),
+        legendgroup='1'
+    ), row=1, col=1)
+    
+    # Comp Asset
+    if has_comp:
+        fig.add_trace(go.Scatter(
+            x=df_comp.index, y=df_comp['Portfolio_Value'],
+            mode='lines', name=f'{name_comp} Val',
+            line=dict(color='orange', width=1.5),
+            legendgroup='1'
+        ), row=1, col=1)
+
+    # Total Invested
+    fig.add_trace(go.Scatter(
         x=df_main.index, y=df_main['Total_Invested'],
         mode='lines', name='Total Invested',
-        line=dict(color='gray', width=1.0, dash='dash')
-    ))
+        line=dict(color='gray', width=1.0, dash='dash'),
+        legendgroup='1'
+    ), row=1, col=1)
 
-    fig_value.update_layout(
-        title=f'💰 1. Portfolio Value Comparison',
-        xaxis_title='Date', yaxis_title='Value ($)',
-        yaxis_type=y_axis_type, template='plotly_white', hovermode='x unified',
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
-    st.plotly_chart(fig_value, use_container_width=True)
-
-    # --- 2. Winning Chart (Relative Performance) ---
+    # --- ROW 2: Winning Chart ---
     if has_comp:
-        # Calculate Difference (Main - Comp)
         diff_value = df_main['Portfolio_Value'] - df_comp['Portfolio_Value']
-        
-        # Determine Fill Colors (Green if Main > Comp, Red if Main < Comp)
-        # Plotly fill requires a workaround for conditional fill or simple 'tozeroy'
-        # Here we use 'tozeroy' but color logic is simple line. 
-        # A better approach for "Winning" is a bar or filled area.
-        
-        fig_win = go.Figure()
-        
-        fig_win.add_trace(go.Scatter(
-            x=diff_value.index, y=diff_value,
-            mode='lines', 
-            name=f'{name_main} Advantage ($)',
-            line=dict(width=0), # Hide line, just fill
-            fill='tozeroy',
-            fillcolor='rgba(0, 128, 0, 0.5)' # Default Green tint
-        ))
-        
-        # Add visual cue for below zero (Red) -> We can add a red area for negative parts
-        # or simplify by just showing the delta line. 
-        # Let's make it a simple Line chart with Zero line.
-        
-        fig_win = go.Figure()
-        fig_win.add_trace(go.Scatter(
-            x=diff_value.index, y=diff_value,
-            mode='lines', 
-            name='Profit Difference ($)',
-            line=dict(color='black', width=1.0),
-            fill='tozeroy',
-        ))
-        
-        # Update layout to make positive Green, negative Red?
-        # Plotly doesn't support gradient fill based on y-value easily in one trace.
-        # We will separate positive and negative for coloring.
-        
         pos_part = diff_value.apply(lambda x: x if x > 0 else 0)
         neg_part = diff_value.apply(lambda x: x if x < 0 else 0)
         
-        fig_win = go.Figure()
-        fig_win.add_trace(go.Scatter(
+        fig.add_trace(go.Scatter(
             x=diff_value.index, y=pos_part,
-            mode='lines', name=f'{name_main} Winning',
+            mode='lines', name=f'{name_main} Lead',
             fill='tozeroy', fillcolor='rgba(0, 200, 0, 0.3)',
-            line=dict(color='green', width=0.5)
-        ))
-        fig_win.add_trace(go.Scatter(
+            line=dict(color='green', width=0.5),
+            legendgroup='2'
+        ), row=2, col=1)
+        
+        fig.add_trace(go.Scatter(
             x=diff_value.index, y=neg_part,
-            mode='lines', name=f'{name_comp} Winning',
+            mode='lines', name=f'{name_comp} Lead',
             fill='tozeroy', fillcolor='rgba(200, 0, 0, 0.3)',
-            line=dict(color='red', width=0.5)
-        ))
-
-        fig_win.update_layout(
-            title=f'⚖️ 2. Winning Chart (Difference: {name_main} - {name_comp})',
-            xaxis_title='Date', yaxis_title='Difference ($)',
-            template='plotly_white', hovermode='x unified',
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-        )
-        st.plotly_chart(fig_win, use_container_width=True)
-
+            line=dict(color='red', width=0.5),
+            legendgroup='2'
+        ), row=2, col=1)
     else:
-        # If no comparison, show a placeholder or skip
-        st.info("ℹ️ Select a Comparison Asset to view the 'Winning Chart'.")
+        # Placeholder if no comp
+        fig.add_annotation(text="Select Comparison Asset to view", xref="x2", yref="y2", x=df_main.index[len(df_main)//2], y=0, showarrow=False)
 
-    # --- 3. Drawdown Chart ---
-    fig_dd = go.Figure()
-    fig_dd.add_trace(go.Scatter(
+    # --- ROW 3: Drawdown ---
+    fig.add_trace(go.Scatter(
         x=df_main.index, y=df_main['Drawdown'] * 100,
         mode='lines', name=f'{name_main} DD',
         fill='tozeroy',
-        line=dict(color='blue', width=1.0)
-    ))
+        line=dict(color='blue', width=1.0),
+        legendgroup='3'
+    ), row=3, col=1)
+    
     if has_comp:
-        fig_dd.add_trace(go.Scatter(
+        fig.add_trace(go.Scatter(
             x=df_comp.index, y=df_comp['Drawdown'] * 100,
             mode='lines', name=f'{name_comp} DD',
-            line=dict(color='orange', width=1.0)
-        ))
-    
-    fig_dd.update_layout(
-        title='🌊 3. Drawdown Comparison (%)',
-        xaxis_title='Date', yaxis_title='Drawdown (%)',
-        template='plotly_white', hovermode='x unified',
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            line=dict(color='orange', width=1.0),
+            legendgroup='3'
+        ), row=3, col=1)
+
+    # --- Layout Update for Synchronization ---
+    fig.update_layout(
+        height=900, # Taller chart to accommodate 3 rows
+        template='plotly_white',
+        hovermode='x unified', # Key: Shows all values in one box
+        legend=dict(tracegroupgap=20) # Better legend spacing
     )
-    st.plotly_chart(fig_dd, use_container_width=True)
+    
+    # Add Vertical Line (Spike) that cuts across all subplots
+    fig.update_xaxes(
+        showspikes=True, 
+        spikemode='across', # Line across all rows
+        spikesnap='cursor',
+        showline=True, 
+        showgrid=True,
+        spikedash='solid',
+        spikecolor='gray',
+        spikethickness=1
+    )
+    
+    # Apply Log Scale only to Row 1
+    fig.update_yaxes(type=y_axis_type, row=1, col=1)
+    
+    # Axis labels
+    fig.update_yaxes(title_text="Value ($)", row=1, col=1)
+    fig.update_yaxes(title_text="Diff ($)", row=2, col=1)
+    fig.update_yaxes(title_text="MDD (%)", row=3, col=1)
+
+    st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------------------------------------------
 # 6. Main Execution (Real-time)
@@ -398,8 +380,8 @@ with st.spinner(f'Processing Simulation...'):
 
         st.markdown("---")
         
-        # --- Plot Charts (Modified) ---
-        plot_charts(res_main, res_comp, selected_ticker, comp_label_final, use_log_scale)
+        # --- Plot Synced Charts ---
+        plot_charts_synced(res_main, res_comp, selected_ticker, comp_label_final, use_log_scale)
         
         with st.expander("View Detailed Data (Main Asset)"):
             st.dataframe(res_main[['Close', 'Total_Invested', 'Portfolio_Value', 'Drawdown']].style.format("{:.2f}"))
