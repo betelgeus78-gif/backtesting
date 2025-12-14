@@ -27,7 +27,17 @@ if 'sim_result' not in st.session_state:
 st.sidebar.header("⚙️ Simulation Settings")
 
 # 1. 추천 티커 리스트
-common_tickers = ["QQQ", "TQQQ", "QLD", "SPY", "UPRO", "SOXL", "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", "TLT", "TMF", "COIN", "MSTR"]
+common_tickers = [
+    "QQQ", "TQQQ", "QLD", "SQQQ", "PSQ",        # Nasdaq 계열
+    "SPY", "UPRO", "SSO",                       # S&P500 계열
+    "SOXX", "SOXL", "SOXS",                     # 반도체 계열
+    "NVDA", "TSLA", "AAPL", "MSFT", "AMZN",     # 빅테크 개별주
+    "GOOGL", "META", "NFLX",                    # (엔터를 쳐서 줄바꿈 해도 됩니다)
+    "TLT", "TMF", "TMV",                        # 채권
+    "BULZ", "TECL", "FNGU", "WEBL",             # 님께서 추가하고 싶은 티커들!
+    "COIN", "MSTR", "BITX", "MSTU"              # 코인 관련
+    "BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD"     # 암호화폐 관련
+]
 
 # 2. UI 구성: Selectbox (검색용) + Text Input (수동용)
 st.sidebar.markdown("### Asset Selection")
