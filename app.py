@@ -22,11 +22,33 @@ if 'sim_result' not in st.session_state:
     st.session_state.sim_result = None
 
 # -----------------------------------------------------------------------------
-# [2] 사이드바 설정
+# [2] 사이드바 설정 (자동완성 기능 추가)
 # -----------------------------------------------------------------------------
 st.sidebar.header("⚙️ Simulation Settings")
 
-underlying_ticker = st.sidebar.text_input("Ticker Symbol", value="QQQ")
+# 1. 주요 티커 리스트 정의 (자동완성 목록)
+common_tickers = [
+    "QQQ", "TQQQ", "QLD", "SQQQ",  # Nasdaq
+    "SPY", "UPRO", "SSO", "VOO",   # S&P 500
+    "SOXX", "SOXL", "SOXS",        # Semiconductor
+    "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", # Big Tech
+    "BITX", "MSTU", "MSTR", "COIN", # Crypto Related
+    "TLT", "TMF", "TMV",           # Bonds
+    "SCHD", "JEPI"                 # Dividend
+]
+
+# 2. 티커 선택 UI (검색 가능한 Selectbox)
+# 사용자가 직접 입력도 가능하게 하려면 text_input과 selectbox를 병행하거나,
+# selectbox에 없는 값을 허용하는 서드파티 컴포넌트를 써야 하는데,
+# 가장 깔끔한 방법은 '직접 입력' 옵션을 넣는 것입니다.
+
+input_method = st.sidebar.radio("Input Method", ["Select from List", "Type Manually"], horizontal=True, label_visibility="collapsed")
+
+if input_method == "Select from List":
+    underlying_ticker = st.sidebar.selectbox("Ticker Symbol", common_tickers, index=0) # QQQ Default
+else:
+    underlying_ticker = st.sidebar.text_input("Ticker Symbol", value="QQQ").upper() # 직접 입력
+    
 base_lev_ratio = st.sidebar.number_input("Base Leverage (Normal)", value=1.0, step=0.5)
 boost_lev_ratio = st.sidebar.number_input("Boost Leverage (Fear)", value=3.0, step=0.5)
 expense_ratio_pct = st.sidebar.number_input("Expense Ratio (%)", value=1.0, step=0.1)
