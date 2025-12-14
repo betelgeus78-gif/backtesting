@@ -1,6 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime
 
@@ -38,7 +39,7 @@ common_tickers = [
 with st.sidebar:
     st.header("⚙️ Settings")
     
-    # Ticker Selection (No direct input)
+    # Ticker Selection
     selected_ticker = st.selectbox("Select Asset", common_tickers, index=0)
     
     # Date Range
@@ -75,7 +76,7 @@ def get_data(ticker, start, end):
         df = yf.download(ticker, start=start, end=end, progress=False)
         if df.empty:
             return None
-        # Handle MultiIndex columns if necessary
+        # Handle MultiIndex columns
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         return df[['Close']]
@@ -85,49 +86,27 @@ def get_data(ticker, start, end):
 def run_dca_backtest(df, initial_cap, recurring_amt, freq):
     df = df.copy()
     
-    # Calculate returns
+    # Calculate returns for metrics
     df['Daily_Return'] = df['Close'].pct_change().fillna(0)
     
     # Initialize simulation columns
-    df['Cash_Flow'] = 0.0
-    df['Total_Invested'] = 0.0
-    df['Holdings_Shares'] = 0.0
-    df['Portfolio_Value'] = 0.0
-    
-    # Setup resampling rule based on frequency
-    # We will mark 'True' on days when contribution happens
     df['Contribution_Day'] = False
     
+    # Setup resampling rule based on frequency
     if freq == 'Daily':
         df['Contribution_Day'] = True
     elif freq == 'Weekly':
-        # Contribution on the first available day of the week (Monday or first trading day)
-        # Using week number to identify unique weeks
         df['Week_Num'] = df.index.isocalendar().week
         df['Year_Num'] = df.index.isocalendar().year
-        # Group by Year/Week and take the first index
         contribution_indices = df.groupby(['Year_Num', 'Week_Num']).head(1).index
         df.loc[contribution_indices, 'Contribution_Day'] = True
     elif freq == 'Monthly':
-        # Contribution on the first available day of the month
         df['Month_Num'] = df.index.month
         df['Year_Num'] = df.index.year
         contribution_indices = df.groupby(['Year_Num', 'Month_Num']).head(1).index
         df.loc[contribution_indices, 'Contribution_Day'] = True
 
-    # Iterative calculation (necessary for DCA because shares accumulate)
-    # Using a loop is slower but accurate for cash flows. 
-    # Optimized approach: Calculate cumulative shares and cash flows.
-    
-    current_shares = initial_cap / df['Close'].iloc[0]
-    total_invested = initial_cap
-    
-    # Lists to store computed series
-    shares_list = []
-    invested_list = []
-    
-    # Fast iteration
-    # Create numpy arrays for speed
+    # Fast Iteration for DCA
     closes = df['Close'].values
     is_contrib = df['Contribution_Day'].values
     
@@ -140,14 +119,7 @@ def run_dca_backtest(df, initial_cap, recurring_amt, freq):
     for i in range(len(df)):
         price = closes[i]
         
-        # Add recurring contribution if it's the day (skip first day for recurring, 
-        # or handle differently? usually Start Date has Initial, subsequent periods have Recurring)
-        # Here we assume Initial Capital is at t=0. 
-        # Recurring starts from the first trigger found.
-        
-        # Logic: If it is a contribution day, buy more shares
         if is_contrib[i]:
-            # We assume buying at Close price
             new_shares = recurring_amt / price
             curr_sh += new_shares
             tot_inv += recurring_amt
@@ -164,6 +136,28 @@ def run_dca_backtest(df, initial_cap, recurring_amt, freq):
     df['Drawdown'] = (df['Portfolio_Value'] - df['Peak']) / df['Peak']
     
     return df
+
+def calculate_metrics(df):
+    # 1. CAGR (Asset Price Growth)
+    start_price = df['Close'].iloc[0]
+    end_price = df['Close'].iloc[-1]
+    days = (df.index[-1] - df.index[0]).days
+    cagr = ((end_price / start_price) ** (365.25 / days) - 1) * 100 if days > 0 else 0.0
+
+    # 2. Volatility (Annualized)
+    volatility = df['Daily_Return'].std() * np.sqrt(252) * 100
+
+    # 3. Sharpe Ratio (Annualized)
+    mean_return = df['Daily_Return'].mean()
+    std_return = df['Daily_Return'].std()
+    sharpe = (mean_return / std_return) * np.sqrt(252) if std_return != 0 else 0.0
+
+    # 4. Sortino Ratio (Annualized) - Downside Risk only
+    negative_returns = df.loc[df['Daily_Return'] < 0, 'Daily_Return']
+    downside_std = negative_returns.std()
+    sortino = (mean_return * 252) / (downside_std * np.sqrt(252)) if downside_std != 0 else 0.0
+
+    return cagr, volatility, sharpe, sortino
 
 # ---------------------------------------------------------
 # 5. Plotting Function
@@ -200,11 +194,11 @@ def plot_dca_charts(df, ticker, log_scale):
         line=dict(color='red', width=1.0)
     ))
     
-    # Total Invested (Principal)
+    # Total Invested
     fig_value.add_trace(go.Scatter(
         x=df.index, y=df['Total_Invested'],
         mode='lines',
-        name='Total Invested (Principal)',
+        name='Total Invested',
         line=dict(color='gray', width=1.0, dash='dash')
     ))
 
@@ -248,26 +242,46 @@ if run_btn:
         # Run Backtest
         df = run_dca_backtest(df, initial_capital, recurring_amount, frequency)
         
-        # Summary Metrics
+        # Calculate Financial Metrics
         final_value = df['Portfolio_Value'].iloc[-1]
         total_invested = df['Total_Invested'].iloc[-1]
         profit = final_value - total_invested
         total_return_pct = (profit / total_invested) * 100
         max_dd = df['Drawdown'].min() * 100
         
-        # Display Results
+        # Calculate Technical Metrics
+        cagr, volatility, sharpe, sortino = calculate_metrics(df)
+        
         st.success(f"Simulation Complete: {selected_ticker}")
+        st.markdown("### 📊 Performance Summary")
+
+        # --- Row 1: Financials ---
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Final Value", f"${final_value:,.0f}", help="최종 자산 평가액입니다.")
+        c2.metric("Total Invested", f"${total_invested:,.0f}", help="투자한 원금의 총합입니다.")
+        c3.metric("Total Profit", f"${profit:,.0f} ({total_return_pct:.1f}%)", help="순이익과 수익률입니다.")
+        c4.metric("Max Drawdown", f"{max_dd:.2f}%", help="최고점 대비 가장 많이 하락했던 비율입니다. (손실폭)")
+
+        # --- Row 2: Technical Indicators ---
+        c5, c6, c7, c8 = st.columns(4)
+        c5.metric("Asset CAGR", f"{cagr:.2f}%", 
+                  help="연평균 성장률입니다. 자산이 매년 평균적으로 얼마나 성장했는지를 나타냅니다.")
         
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Final Value", f"${final_value:,.0f}")
-        col2.metric("Total Invested", f"${total_invested:,.0f}")
-        col3.metric("Total Profit", f"${profit:,.0f} ({total_return_pct:.2f}%)")
-        col4.metric("Max Drawdown", f"{max_dd:.2f}%")
+        c6.metric("Volatility", f"{volatility:.2f}%", 
+                  help="연간 변동성입니다. 수치가 높을수록 가격이 위아래로 심하게 움직인다는 뜻입니다.")
         
+        c7.metric("Sharpe Ratio", f"{sharpe:.2f}", 
+                  help="샤프 지수 (위험 대비 수익률). 보통 1.0 이상이면 좋고, 높을수록 훌륭한 전략입니다.")
+        
+        c8.metric("Sortino Ratio", f"{sortino:.2f}", 
+                  help="소티노 지수. 주가 하락(손실) 위험만을 고려한 수익률 지표입니다. 샤프 지수보다 실질적인 성과를 보여줍니다.")
+        
+        st.markdown("---")
+
         # Plot Charts
         plot_dca_charts(df, selected_ticker, use_log_scale)
         
-        # Optional: Show Data
+        # Detailed Data
         with st.expander("View Detailed Data"):
             st.dataframe(df[['Close', 'Total_Invested', 'Portfolio_Value', 'Drawdown']].style.format("{:.2f}"))
             
