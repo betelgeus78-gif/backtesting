@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime
 
 # ---------------------------------------------------------
@@ -10,7 +11,6 @@ from datetime import datetime
 # ---------------------------------------------------------
 st.set_page_config(page_title="DCA Backtest Simulator", layout="wide")
 
-# CSS to reduce font size for metrics
 st.markdown("""
     <style>
     [data-testid="stMetricValue"] {
@@ -29,58 +29,44 @@ st.title("📈 DCA (Dollar Cost Averaging) Backtest Simulator")
 # 2. Predefined Ticker List
 # ---------------------------------------------------------
 common_tickers = [
-    # [US Indices/Sectors]
     "QQQ", "TQQQ", "QLD", "PSQ", "SQQQ", 
     "SPY", "UPRO", "SSO", 
     "SOXX", "SOXL", "SOXS", 
     "TLT", "TMF", "TMV",
-    
-    # [Big Tech/Individual]
     "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", "META", "NFLX",
     "COIN", "MSTR", 
-    
-    # [Crypto Top 10]
     "BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", 
     "DOGE-USD", "ADA-USD", "TRX-USD", "AVAX-USD", "SHIB-USD",
-
-    # [Korean Stocks]
     "005930.KS", "000660.KS"
 ]
 
 # ---------------------------------------------------------
-# 3. Sidebar Inputs (Real-time)
+# 3. Sidebar Inputs
 # ---------------------------------------------------------
 with st.sidebar:
     st.header("⚙️ Settings")
     
-    # --- Main Asset ---
-    selected_ticker = st.selectbox("Select Asset (Main)", common_tickers, index=0)
+    # Main Asset
+    main_ticker = st.selectbox("Select Main Asset", common_tickers, index=0)
     
     st.markdown("---")
     
-    # --- Comparison Asset Settings ---
+    # Comparison Assets (Multi-Select)
     st.subheader("🆚 Comparison Settings")
+    use_comparison = st.checkbox("Compare with other assets?", value=False)
     
-    # Simulate Leverage Checkbox
-    use_simulation = st.checkbox("Simulate Leverage (Daily Rebalancing)", value=False)
-    
-    comparison_ticker = "None"
-    leverage_ratio = 1.0
-    comp_label_final = "None"
-
-    if use_simulation:
-        # Show leverage slider
-        leverage_ratio = st.number_input("Target Leverage (1.0x ~ 5.0x)", min_value=1.0, max_value=5.0, value=2.0, step=0.1)
-        comp_label_final = f"Simulated {leverage_ratio:.1f}x ({selected_ticker})"
-    else:
-        # Show ticker selector with "None" option
-        comp_options = ["None"] + common_tickers
-        comparison_ticker = st.selectbox("Select Comparison Asset", comp_options, index=0)
-        comp_label_final = comparison_ticker
+    comp_tickers = []
+    if use_comparison:
+        # Filter out main ticker from options to avoid duplicate
+        options = [t for t in common_tickers if t != main_ticker]
+        comp_tickers = st.multiselect(
+            "Select Comparison Assets (Max 5)", 
+            options, 
+            max_selections=5
+        )
 
     st.markdown("---")
 
-    # Date Range
     col1, col2 = st.columns(2)
     with col1:
         start_date = st.date_input("Start Date", datetime(2020, 1, 1))
@@ -89,51 +75,45 @@ with st.sidebar:
 
     st.markdown("---")
     
-    # Capital & Contribution
     initial_capital = st.number_input("Initial Capital ($)", value=10000, step=1000)
     recurring_amount = st.number_input("Recurring Contribution ($)", value=500, step=100)
-    
-    # Frequency
     frequency = st.selectbox("Contribution Frequency", ["Monthly", "Weekly", "Daily"], index=0)
     
     st.markdown("---")
     
-    # Chart Options
     use_log_scale = st.checkbox("Use Log Scale (Portfolio Value)", value=False)
 
 # ---------------------------------------------------------
-# 4. Data & Calculation Functions
+# 4. Data Functions
 # ---------------------------------------------------------
 @st.cache_data
-def get_data(ticker, start, end):
+def get_data_multi(tickers, start, end):
+    """Fetches data for multiple tickers at once."""
+    if not tickers:
+        return pd.DataFrame()
     try:
-        df = yf.download(ticker, start=start, end=end, progress=False)
-        if df.empty:
-            return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        return df[['Close']]
-    except Exception as e:
-        return None
+        data = yf.download(tickers, start=start, end=end, progress=False)['Close']
+        # If single ticker, yfinance returns Series, convert to DataFrame
+        if isinstance(data, pd.Series):
+            data = data.to_frame(name=tickers[0])
+        return data
+    except:
+        return pd.DataFrame()
 
-def generate_leveraged_data(df_base, leverage):
-    """Generates a synthetic price path based on daily rebalancing leverage."""
-    df_sim = df_base.copy()
-    df_sim['Base_Return'] = df_sim['Close'].pct_change().fillna(0)
-    df_sim['Sim_Return'] = df_sim['Base_Return'] * leverage
+def run_dca_backtest(series, initial_cap, recurring_amt, freq):
+    """
+    Runs DCA backtest for a single price series (pd.Series).
+    Returns a DataFrame with results.
+    """
+    df = series.to_frame(name='Close')
+    df = df.dropna()
     
-    start_price = df_sim['Close'].iloc[0]
-    df_sim['Close'] = start_price * (1 + df_sim['Sim_Return']).cumprod()
-    
-    return df_sim[['Close']]
+    if df.empty: return None
 
-def run_dca_backtest(df, initial_cap, recurring_amt, freq):
-    df = df.copy()
     df['Daily_Return'] = df['Close'].pct_change().fillna(0)
     df['Contribution_Day'] = False
     
-    if freq == 'Daily':
-        df['Contribution_Day'] = True
+    if freq == 'Daily': df['Contribution_Day'] = True
     elif freq == 'Weekly':
         df['Week_Num'] = df.index.isocalendar().week
         df['Year_Num'] = df.index.isocalendar().year
@@ -148,19 +128,17 @@ def run_dca_backtest(df, initial_cap, recurring_amt, freq):
     closes = df['Close'].values
     is_contrib = df['Contribution_Day'].values
     
-    current_shares_arr = []
-    total_invested_arr = []
-    
     curr_sh = initial_cap / closes[0]
     tot_inv = initial_cap
     
+    current_shares_arr = []
+    total_invested_arr = []
+    
     for i in range(len(df)):
-        price = closes[i]
         if is_contrib[i]:
-            new_shares = recurring_amt / price
+            new_shares = recurring_amt / closes[i]
             curr_sh += new_shares
             tot_inv += recurring_amt
-            
         current_shares_arr.append(curr_sh)
         total_invested_arr.append(tot_inv)
         
@@ -177,16 +155,14 @@ def calculate_metrics(df):
     end_price = df['Close'].iloc[-1]
     days = (df.index[-1] - df.index[0]).days
     cagr = ((end_price / start_price) ** (365.25 / days) - 1) * 100 if days > 0 else 0.0
-
+    
     volatility = df['Daily_Return'].std() * np.sqrt(252) * 100
-
     mean_return = df['Daily_Return'].mean()
-    std_return = df['Daily_Return'].std()
-    sharpe = (mean_return / std_return) * np.sqrt(252) if std_return != 0 else 0.0
-
-    negative_returns = df.loc[df['Daily_Return'] < 0, 'Daily_Return']
-    downside_std = negative_returns.std()
-    sortino = (mean_return * 252) / (downside_std * np.sqrt(252)) if downside_std != 0 else 0.0
+    sharpe = (mean_return / df['Daily_Return'].std()) * np.sqrt(252) if df['Daily_Return'].std() != 0 else 0.0
+    
+    neg_ret = df.loc[df['Daily_Return'] < 0, 'Daily_Return']
+    down_std = neg_ret.std()
+    sortino = (mean_return * 252) / (down_std * np.sqrt(252)) if down_std != 0 else 0.0
     
     final_val = df['Portfolio_Value'].iloc[-1]
     total_inv = df['Total_Invested'].iloc[-1]
@@ -195,15 +171,9 @@ def calculate_metrics(df):
     max_dd = df['Drawdown'].min() * 100
 
     return {
-        "final_val": final_val,
-        "total_inv": total_inv,
-        "profit": profit,
-        "ret_pct": ret_pct,
-        "max_dd": max_dd,
-        "cagr": cagr,
-        "vol": volatility,
-        "sharpe": sharpe,
-        "sortino": sortino
+        "final_val": final_val, "total_inv": total_inv, "profit": profit,
+        "ret_pct": ret_pct, "max_dd": max_dd, "cagr": cagr,
+        "vol": volatility, "sharpe": sharpe, "sortino": sortino
     }
 
 def display_metrics_block(metrics, title, color_bar):
@@ -213,196 +183,190 @@ def display_metrics_block(metrics, title, color_bar):
         st.metric("Final Value", f"${metrics['final_val']:,.0f}", help="최종 자산 평가액입니다.")
         st.metric("Total Profit", f"${metrics['profit']:,.0f} ({metrics['ret_pct']:.1f}%)", help="총 순이익금과 수익률입니다.")
         st.metric("Asset CAGR", f"{metrics['cagr']:.2f}%", help="연평균 성장률(복리)입니다.")
-        st.metric("Sharpe Ratio", f"{metrics['sharpe']:.2f}", help="샤프 지수 (위험 대비 수익률). 보통 1.0 이상이면 좋고, 높을수록 훌륭한 전략입니다.")
+        st.metric("Sharpe Ratio", f"{metrics['sharpe']:.2f}", help="샤프 지수 (위험 대비 수익률). 1.0 이상이면 우수.")
     with c2:
         st.metric("Total Invested", f"${metrics['total_inv']:,.0f}", help="총 투자된 원금입니다.")
         st.metric("Max Drawdown", f"{metrics['max_dd']:.2f}%", help="최고점 대비 최대 하락폭(MDD)입니다.")
-        st.metric("Volatility", f"{metrics['vol']:.2f}%", help="연간 변동성입니다. 수치가 높을수록 가격 등락이 심합니다.")
-        st.metric("Sortino Ratio", f"{metrics['sortino']:.2f}", help="소티노 지수. 하락 변동성(손실 위험)만 고려한 수익 효율성 지표입니다.")
+        st.metric("Volatility", f"{metrics['vol']:.2f}%", help="연간 변동성입니다.")
+        st.metric("Sortino Ratio", f"{metrics['sortino']:.2f}", help="소티노 지수 (하락 위험 대비 수익률).")
 
 # ---------------------------------------------------------
-# 5. Plotting Function (Refined)
+# 5. Perfect Sync Chart Function (Multi-Asset)
 # ---------------------------------------------------------
-def plot_charts(df_main, df_comp, name_main, name_comp, log_scale):
+def plot_charts_synced_multi(results_dict, main_ticker, log_scale):
     y_axis_type = "log" if log_scale else "linear"
-    has_comp = df_comp is not None
     
-    # --- 1. Portfolio Value Chart ---
-    fig_value = go.Figure()
+    # Identify Comparison Tickers
+    comp_tickers = [t for t in results_dict.keys() if t != main_ticker]
+    has_comp = len(comp_tickers) > 0
     
-    # Main Asset
-    fig_value.add_trace(go.Scatter(
-        x=df_main.index, y=df_main['Portfolio_Value'],
-        mode='lines', name=f'{name_main} Portfolio',
-        line=dict(color='red', width=1.5)
-    ))
-    
-    # Comparison Asset
-    if has_comp:
-        fig_value.add_trace(go.Scatter(
-            x=df_comp.index, y=df_comp['Portfolio_Value'],
-            mode='lines', name=f'{name_comp} Portfolio',
-            line=dict(color='orange', width=1.5)
-        ))
-
-    # Total Invested (Common)
-    fig_value.add_trace(go.Scatter(
-        x=df_main.index, y=df_main['Total_Invested'],
-        mode='lines', name='Total Invested',
-        line=dict(color='gray', width=1.0, dash='dash')
-    ))
-
-    fig_value.update_layout(
-        title=f'💰 1. Portfolio Value Comparison',
-        xaxis_title='Date', yaxis_title='Value ($)',
-        yaxis_type=y_axis_type, template='plotly_white', hovermode='x unified',
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    # 1. Create Subplots
+    fig = make_subplots(
+        rows=3, cols=1,
+        shared_xaxes=True, 
+        vertical_spacing=0.03,
+        subplot_titles=(
+            '💰 Portfolio Value',
+            '⚖️ Winning (Diff from Main)',
+            '🌊 Drawdown (%)'
+        ),
+        row_heights=[0.5, 0.25, 0.25]
     )
-    st.plotly_chart(fig_value, use_container_width=True)
 
-    # --- 2. Winning Chart (Relative Performance) ---
+    # --- Colors for multiple lines ---
+    colors = ['orange', 'green', 'purple', 'brown', 'cyan'] # Main is always Red
+
+    # --- Row 1: Portfolio Value ---
+    # Main Asset (Red)
+    main_df = results_dict[main_ticker]
+    fig.add_trace(go.Scatter(
+        x=main_df.index, y=main_df['Portfolio_Value'],
+        mode='lines', name=f'{main_ticker} (Main)',
+        line=dict(color='red', width=2),
+        legendgroup='g1'
+    ), row=1, col=1)
+
+    # Comparison Assets
+    for idx, ticker in enumerate(comp_tickers):
+        color = colors[idx % len(colors)]
+        comp_df = results_dict[ticker]
+        fig.add_trace(go.Scatter(
+            x=comp_df.index, y=comp_df['Portfolio_Value'],
+            mode='lines', name=f'{ticker}',
+            line=dict(color=color, width=1.5),
+            legendgroup='g1'
+        ), row=1, col=1)
+
+    # Total Invested (Common) - Assuming same logic for all, take main
+    fig.add_trace(go.Scatter(
+        x=main_df.index, y=main_df['Total_Invested'],
+        mode='lines', name='Invested',
+        line=dict(color='gray', width=1.0, dash='dash'),
+        legendgroup='g1'
+    ), row=1, col=1)
+
+    # --- Row 2: Winning (Difference vs Main) ---
     if has_comp:
-        # Calculate Difference (Main - Comp)
-        diff_value = df_main['Portfolio_Value'] - df_comp['Portfolio_Value']
-        
-        # Determine Fill Colors (Green if Main > Comp, Red if Main < Comp)
-        # Plotly fill requires a workaround for conditional fill or simple 'tozeroy'
-        # Here we use 'tozeroy' but color logic is simple line. 
-        # A better approach for "Winning" is a bar or filled area.
-        
-        fig_win = go.Figure()
-        
-        fig_win.add_trace(go.Scatter(
-            x=diff_value.index, y=diff_value,
-            mode='lines', 
-            name=f'{name_main} Advantage ($)',
-            line=dict(width=0), # Hide line, just fill
-            fill='tozeroy',
-            fillcolor='rgba(0, 128, 0, 0.5)' # Default Green tint
-        ))
-        
-        # Add visual cue for below zero (Red) -> We can add a red area for negative parts
-        # or simplify by just showing the delta line. 
-        # Let's make it a simple Line chart with Zero line.
-        
-        fig_win = go.Figure()
-        fig_win.add_trace(go.Scatter(
-            x=diff_value.index, y=diff_value,
-            mode='lines', 
-            name='Profit Difference ($)',
-            line=dict(color='black', width=1.0),
-            fill='tozeroy',
-        ))
-        
-        # Update layout to make positive Green, negative Red?
-        # Plotly doesn't support gradient fill based on y-value easily in one trace.
-        # We will separate positive and negative for coloring.
-        
-        pos_part = diff_value.apply(lambda x: x if x > 0 else 0)
-        neg_part = diff_value.apply(lambda x: x if x < 0 else 0)
-        
-        fig_win = go.Figure()
-        fig_win.add_trace(go.Scatter(
-            x=diff_value.index, y=pos_part,
-            mode='lines', name=f'{name_main} Winning',
-            fill='tozeroy', fillcolor='rgba(0, 200, 0, 0.3)',
-            line=dict(color='green', width=0.5)
-        ))
-        fig_win.add_trace(go.Scatter(
-            x=diff_value.index, y=neg_part,
-            mode='lines', name=f'{name_comp} Winning',
-            fill='tozeroy', fillcolor='rgba(200, 0, 0, 0.3)',
-            line=dict(color='red', width=0.5)
-        ))
-
-        fig_win.update_layout(
-            title=f'⚖️ 2. Winning Chart (Difference: {name_main} - {name_comp})',
-            xaxis_title='Date', yaxis_title='Difference ($)',
-            template='plotly_white', hovermode='x unified',
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-        )
-        st.plotly_chart(fig_win, use_container_width=True)
-
+        for idx, ticker in enumerate(comp_tickers):
+            color = colors[idx % len(colors)]
+            comp_df = results_dict[ticker]
+            # Diff = Comp - Main (or Main - Comp? User usually wants to see if Main is winning)
+            # Let's do: Comparison - Main (To show how Comp performs relative to Main baseline 0)
+            # OR: Main - Comparison. 
+            # Standard: Main Asset Advantage. (Positive = Main is better)
+            
+            # Align Index
+            aligned_comp = comp_df['Portfolio_Value'].reindex(main_df.index, method='ffill')
+            diff = main_df['Portfolio_Value'] - aligned_comp
+            
+            fig.add_trace(go.Scatter(
+                x=diff.index, y=diff,
+                mode='lines', name=f'Main vs {ticker}',
+                line=dict(color=color, width=1.0),
+                fill='tozeroy', # Fill to zero
+                legendgroup='g2'
+            ), row=2, col=1)
+            
+            # Note: Multiple fills might look messy, but acceptable for comparison.
     else:
-        # If no comparison, show a placeholder or skip
-        st.info("ℹ️ Select a Comparison Asset to view the 'Winning Chart'.")
+        fig.add_annotation(text="Add comparison assets to see winning chart", xref="x2", yref="y2", x=main_df.index[len(main_df)//2], y=0, showarrow=False)
 
-    # --- 3. Drawdown Chart ---
-    fig_dd = go.Figure()
-    fig_dd.add_trace(go.Scatter(
-        x=df_main.index, y=df_main['Drawdown'] * 100,
-        mode='lines', name=f'{name_main} DD',
-        fill='tozeroy',
-        line=dict(color='blue', width=1.0)
-    ))
-    if has_comp:
-        fig_dd.add_trace(go.Scatter(
-            x=df_comp.index, y=df_comp['Drawdown'] * 100,
-            mode='lines', name=f'{name_comp} DD',
-            line=dict(color='orange', width=1.0)
-        ))
+    # --- Row 3: Drawdown ---
+    # Main
+    fig.add_trace(go.Scatter(
+        x=main_df.index, y=main_df['Drawdown'] * 100,
+        mode='lines', name=f'{main_ticker} MDD',
+        line=dict(color='red', width=1.0),
+        legendgroup='g3'
+    ), row=3, col=1)
     
-    fig_dd.update_layout(
-        title='🌊 3. Drawdown Comparison (%)',
-        xaxis_title='Date', yaxis_title='Drawdown (%)',
-        template='plotly_white', hovermode='x unified',
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    # Comps
+    for idx, ticker in enumerate(comp_tickers):
+        color = colors[idx % len(colors)]
+        comp_df = results_dict[ticker]
+        fig.add_trace(go.Scatter(
+            x=comp_df.index, y=comp_df['Drawdown'] * 100,
+            mode='lines', name=f'{ticker} MDD',
+            line=dict(color=color, width=1.0),
+            legendgroup='g3'
+        ), row=3, col=1)
+
+    # --- Synchronization ---
+    fig.update_layout(
+        height=900,
+        template='plotly_white',
+        hovermode='x unified', 
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1)
     )
-    st.plotly_chart(fig_dd, use_container_width=True)
+
+    fig.update_xaxes(
+        showspikes=True, spikemode='across', spikesnap='cursor',
+        showline=True, showgrid=True, matches='x'
+    )
+    
+    fig.update_yaxes(type=y_axis_type, row=1, col=1)
+    fig.update_yaxes(title_text="Value ($)", row=1, col=1)
+    fig.update_yaxes(title_text="Diff ($)", row=2, col=1)
+    fig.update_yaxes(title_text="MDD (%)", row=3, col=1)
+
+    st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------------------------------------------
-# 6. Main Execution (Real-time)
+# 6. Main Execution
 # ---------------------------------------------------------
 with st.spinner(f'Processing Simulation...'):
-    df_main = get_data(selected_ticker, start_date, end_date)
+    # 1. Fetch All Data Needed
+    tickers_to_fetch = [main_ticker] + comp_tickers
     
-    df_comp = None
-    res_comp = None
+    # Fetch all data in one go (optimized)
+    data_all = get_data_multi(tickers_to_fetch, start_date, end_date)
     
-    if df_main is not None and not df_main.empty:
+    results = {}
+    
+    if not data_all.empty and main_ticker in data_all.columns:
         
-        # --- Logic for Comparison Data ---
-        if use_simulation:
-            df_comp = generate_leveraged_data(df_main, leverage_ratio)
-        elif comparison_ticker != "None":
-            if comparison_ticker == selected_ticker:
-                df_comp = df_main.copy()
-            else:
-                df_comp_raw = get_data(comparison_ticker, start_date, end_date)
-                if df_comp_raw is not None and not df_comp_raw.empty:
-                    df_comp = df_comp_raw.reindex(df_main.index).ffill().dropna()
-                else:
-                    st.warning(f"Could not fetch data for {comparison_ticker}. Comparison skipped.")
+        # Run Backtest for Main
+        res_main = run_dca_backtest(data_all[main_ticker], initial_capital, recurring_amount, frequency)
+        if res_main is not None:
+            results[main_ticker] = res_main
         
-        # --- Run Backtest ---
-        res_main = run_dca_backtest(df_main, initial_capital, recurring_amount, frequency)
-        metrics_main = calculate_metrics(res_main)
-        
-        metrics_comp = None
-        if df_comp is not None:
-            res_comp = run_dca_backtest(df_comp, initial_capital, recurring_amount, frequency)
-            metrics_comp = calculate_metrics(res_comp)
-            st.success(f"Simulation Complete: {selected_ticker} vs {comp_label_final}")
-        else:
-            st.success(f"Simulation Complete: {selected_ticker}")
+        # Run Backtest for Comps
+        for t in comp_tickers:
+            if t in data_all.columns:
+                res = run_dca_backtest(data_all[t], initial_capital, recurring_amount, frequency)
+                if res is not None:
+                    # Align dates with Main if needed (simple reindex)
+                    res = res.reindex(results[main_ticker].index).ffill()
+                    results[t] = res
+
+        # Display Metrics
+        if main_ticker in results:
+            st.success(f"Simulation Complete: {main_ticker} vs {len(comp_tickers)} assets")
             
-        # --- Dashboard Display ---
-        if metrics_comp:
-            main_col, comp_col = st.columns(2)
-            with main_col:
-                display_metrics_block(metrics_main, f"Main: {selected_ticker}", "🟦")
-            with comp_col:
-                display_metrics_block(metrics_comp, f"Comp: {comp_label_final}", "🟧")
+            # 1. Main Asset Metrics (Full Width or Prominent)
+            display_metrics_block(calculate_metrics(results[main_ticker]), f"Main: {main_ticker}", "🟦")
+            
+            # 2. Comparison Assets Metrics (Grid Layout)
+            if comp_tickers:
+                st.markdown("---")
+                st.subheader("🆚 Comparison Assets Performance")
+                # Create rows of 2 cols
+                cols = st.columns(2)
+                for i, t in enumerate(comp_tickers):
+                    if t in results:
+                        with cols[i % 2]:
+                            display_metrics_block(calculate_metrics(results[t]), f"Comp {i+1}: {t}", "🟧")
+                            st.markdown("---") # Separator inside column
+
+            st.markdown("---")
+            
+            # 3. Synced Charts
+            plot_charts_synced_multi(results, main_ticker, use_log_scale)
+            
+            with st.expander("View Detailed Data (Main Asset)"):
+                st.dataframe(results[main_ticker][['Close', 'Total_Invested', 'Portfolio_Value', 'Drawdown']].style.format("{:.2f}"))
+        
         else:
-            display_metrics_block(metrics_main, f"Main: {selected_ticker}", "🟦")
-
-        st.markdown("---")
-        
-        # --- Plot Charts (Modified) ---
-        plot_charts(res_main, res_comp, selected_ticker, comp_label_final, use_log_scale)
-        
-        with st.expander("View Detailed Data (Main Asset)"):
-            st.dataframe(res_main[['Close', 'Total_Invested', 'Portfolio_Value', 'Drawdown']].style.format("{:.2f}"))
-
+            st.error("Failed to process Main Asset data.")
     else:
-        st.error("Failed to fetch data for Main Asset. Please check the ticker or date range.")
+        st.error("Failed to fetch data. Check tickers or date range.")
