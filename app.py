@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots # 서브플롯 기능을 위해 추가
+from plotly.subplots import make_subplots
 from datetime import datetime
 
 # ---------------------------------------------------------
@@ -11,7 +11,6 @@ from datetime import datetime
 # ---------------------------------------------------------
 st.set_page_config(page_title="DCA Backtest Simulator", layout="wide")
 
-# CSS to reduce font size for metrics
 st.markdown("""
     <style>
     [data-testid="stMetricValue"] {
@@ -30,21 +29,14 @@ st.title("📈 DCA (Dollar Cost Averaging) Backtest Simulator")
 # 2. Predefined Ticker List
 # ---------------------------------------------------------
 common_tickers = [
-    # [US Indices/Sectors]
     "QQQ", "TQQQ", "QLD", "PSQ", "SQQQ", 
     "SPY", "UPRO", "SSO", 
     "SOXX", "SOXL", "SOXS", 
     "TLT", "TMF", "TMV",
-    
-    # [Big Tech/Individual]
     "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", "META", "NFLX",
     "COIN", "MSTR", 
-    
-    # [Crypto Top 10]
     "BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", 
     "DOGE-USD", "ADA-USD", "TRX-USD", "AVAX-USD", "SHIB-USD",
-
-    # [Korean Stocks]
     "005930.KS", "000660.KS"
 ]
 
@@ -54,15 +46,12 @@ common_tickers = [
 with st.sidebar:
     st.header("⚙️ Settings")
     
-    # --- Main Asset ---
     selected_ticker = st.selectbox("Select Asset (Main)", common_tickers, index=0)
     
     st.markdown("---")
     
-    # --- Comparison Asset Settings ---
     st.subheader("🆚 Comparison Settings")
     
-    # Simulate Leverage Checkbox
     use_simulation = st.checkbox("Simulate Leverage (Daily Rebalancing)", value=False)
     
     comparison_ticker = "None"
@@ -212,52 +201,46 @@ def display_metrics_block(metrics, title, color_bar):
         st.metric("Sortino Ratio", f"{metrics['sortino']:.2f}", help="소티노 지수. 하락 변동성(손실 위험)만 고려한 수익 효율성 지표입니다.")
 
 # ---------------------------------------------------------
-# 5. Synchronized Plotting Function (Subplots)
+# 5. Synchronized Plotting Function (Refined)
 # ---------------------------------------------------------
 def plot_charts_synced(df_main, df_comp, name_main, name_comp, log_scale):
     y_axis_type = "log" if log_scale else "linear"
     has_comp = df_comp is not None
     
-    # Define Subplot Titles
-    titles = (
-        '💰 Portfolio Value',
-        f'⚖️ Winning (Diff: {name_main} - {name_comp})' if has_comp else 'Winning Chart (No Comp)',
-        '🌊 Drawdown (%)'
-    )
-    
-    # Create Subplots with Shared X-Axis
+    # Subplots with Shared X-Axis
     fig = make_subplots(
         rows=3, cols=1,
-        shared_xaxes=True, # Synchronize zooming and hovering
-        vertical_spacing=0.08,
-        subplot_titles=titles,
-        row_heights=[0.4, 0.3, 0.3] # Allocate more space to Value chart
+        shared_xaxes=True,
+        vertical_spacing=0.05,
+        subplot_titles=(
+            '💰 Portfolio Value',
+            f'⚖️ Winning (Diff: {name_main} - {name_comp})' if has_comp else 'Winning Chart (No Comp)',
+            '🌊 Drawdown (%)'
+        ),
+        row_heights=[0.4, 0.3, 0.3]
     )
 
     # --- ROW 1: Portfolio Value ---
-    # Main Asset
     fig.add_trace(go.Scatter(
         x=df_main.index, y=df_main['Portfolio_Value'],
         mode='lines', name=f'{name_main} Val',
         line=dict(color='red', width=1.5),
-        legendgroup='1'
+        legendgroup='g1'
     ), row=1, col=1)
     
-    # Comp Asset
     if has_comp:
         fig.add_trace(go.Scatter(
             x=df_comp.index, y=df_comp['Portfolio_Value'],
             mode='lines', name=f'{name_comp} Val',
             line=dict(color='orange', width=1.5),
-            legendgroup='1'
+            legendgroup='g1'
         ), row=1, col=1)
 
-    # Total Invested
     fig.add_trace(go.Scatter(
         x=df_main.index, y=df_main['Total_Invested'],
         mode='lines', name='Total Invested',
         line=dict(color='gray', width=1.0, dash='dash'),
-        legendgroup='1'
+        legendgroup='g1'
     ), row=1, col=1)
 
     # --- ROW 2: Winning Chart ---
@@ -271,7 +254,7 @@ def plot_charts_synced(df_main, df_comp, name_main, name_comp, log_scale):
             mode='lines', name=f'{name_main} Lead',
             fill='tozeroy', fillcolor='rgba(0, 200, 0, 0.3)',
             line=dict(color='green', width=0.5),
-            legendgroup='2'
+            legendgroup='g2'
         ), row=2, col=1)
         
         fig.add_trace(go.Scatter(
@@ -279,11 +262,10 @@ def plot_charts_synced(df_main, df_comp, name_main, name_comp, log_scale):
             mode='lines', name=f'{name_comp} Lead',
             fill='tozeroy', fillcolor='rgba(200, 0, 0, 0.3)',
             line=dict(color='red', width=0.5),
-            legendgroup='2'
+            legendgroup='g2'
         ), row=2, col=1)
     else:
-        # Placeholder if no comp
-        fig.add_annotation(text="Select Comparison Asset to view", xref="x2", yref="y2", x=df_main.index[len(df_main)//2], y=0, showarrow=False)
+        fig.add_annotation(text="Select Comparison Asset", xref="x2", yref="y2", x=df_main.index[len(df_main)//2], y=0, showarrow=False)
 
     # --- ROW 3: Drawdown ---
     fig.add_trace(go.Scatter(
@@ -291,7 +273,7 @@ def plot_charts_synced(df_main, df_comp, name_main, name_comp, log_scale):
         mode='lines', name=f'{name_main} DD',
         fill='tozeroy',
         line=dict(color='blue', width=1.0),
-        legendgroup='3'
+        legendgroup='g3'
     ), row=3, col=1)
     
     if has_comp:
@@ -299,33 +281,31 @@ def plot_charts_synced(df_main, df_comp, name_main, name_comp, log_scale):
             x=df_comp.index, y=df_comp['Drawdown'] * 100,
             mode='lines', name=f'{name_comp} DD',
             line=dict(color='orange', width=1.0),
-            legendgroup='3'
+            legendgroup='g3'
         ), row=3, col=1)
 
-    # --- Layout Update for Synchronization ---
+    # --- Layout Updates for Synchronization ---
     fig.update_layout(
-        height=900, # Taller chart to accommodate 3 rows
+        height=900,
         template='plotly_white',
-        hovermode='x unified', # Key: Shows all values in one box
-        legend=dict(tracegroupgap=20) # Better legend spacing
+        hovermode='x unified',  # 이 설정이 가장 중요 (모든 서브플롯의 정보를 한 번에 표시)
+        legend=dict(tracegroupgap=20)
     )
     
-    # Add Vertical Line (Spike) that cuts across all subplots
+    # x축 전체에 대해 스파이크(세로선) 설정 적용
     fig.update_xaxes(
-        showspikes=True, 
-        spikemode='across', # Line across all rows
+        showspikes=True,
+        spikemode='across',
         spikesnap='cursor',
-        showline=True, 
+        showline=True,
         showgrid=True,
-        spikedash='solid',
-        spikecolor='gray',
-        spikethickness=1
+        matches='x' # 모든 x축을 하나로 묶음 (줌/팬 동기화)
     )
     
-    # Apply Log Scale only to Row 1
+    # Log Scale (Row 1 Only)
     fig.update_yaxes(type=y_axis_type, row=1, col=1)
     
-    # Axis labels
+    # Labels
     fig.update_yaxes(title_text="Value ($)", row=1, col=1)
     fig.update_yaxes(title_text="Diff ($)", row=2, col=1)
     fig.update_yaxes(title_text="MDD (%)", row=3, col=1)
@@ -333,7 +313,7 @@ def plot_charts_synced(df_main, df_comp, name_main, name_comp, log_scale):
     st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------------------------------------------
-# 6. Main Execution (Real-time)
+# 6. Main Execution
 # ---------------------------------------------------------
 with st.spinner(f'Processing Simulation...'):
     df_main = get_data(selected_ticker, start_date, end_date)
@@ -343,7 +323,6 @@ with st.spinner(f'Processing Simulation...'):
     
     if df_main is not None and not df_main.empty:
         
-        # --- Logic for Comparison Data ---
         if use_simulation:
             df_comp = generate_leveraged_data(df_main, leverage_ratio)
         elif comparison_ticker != "None":
@@ -356,7 +335,6 @@ with st.spinner(f'Processing Simulation...'):
                 else:
                     st.warning(f"Could not fetch data for {comparison_ticker}. Comparison skipped.")
         
-        # --- Run Backtest ---
         res_main = run_dca_backtest(df_main, initial_capital, recurring_amount, frequency)
         metrics_main = calculate_metrics(res_main)
         
@@ -368,7 +346,6 @@ with st.spinner(f'Processing Simulation...'):
         else:
             st.success(f"Simulation Complete: {selected_ticker}")
             
-        # --- Dashboard Display ---
         if metrics_comp:
             main_col, comp_col = st.columns(2)
             with main_col:
@@ -380,7 +357,6 @@ with st.spinner(f'Processing Simulation...'):
 
         st.markdown("---")
         
-        # --- Plot Synced Charts ---
         plot_charts_synced(res_main, res_comp, selected_ticker, comp_label_final, use_log_scale)
         
         with st.expander("View Detailed Data (Main Asset)"):
