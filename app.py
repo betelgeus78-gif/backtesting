@@ -34,7 +34,7 @@ common_tickers = [
 ]
 
 # ---------------------------------------------------------
-# 3. Sidebar Inputs (Run Button Removed -> Real-time)
+# 3. Sidebar Inputs (Real-time)
 # ---------------------------------------------------------
 with st.sidebar:
     st.header("⚙️ Settings")
@@ -60,9 +60,8 @@ with st.sidebar:
         comp_label_final = f"Simulated {leverage_ratio:.1f}x ({selected_ticker})"
     else:
         # Show ticker selector with "None" option
-        # Add "None" to the options list just for this selectbox
         comp_options = ["None"] + common_tickers
-        comparison_ticker = st.selectbox("Select Comparison Asset", comp_options, index=0) # Default index 0 is "None"
+        comparison_ticker = st.selectbox("Select Comparison Asset", comp_options, index=0)
         comp_label_final = comparison_ticker
 
     st.markdown("---")
@@ -87,8 +86,6 @@ with st.sidebar:
     
     # Chart Options
     use_log_scale = st.checkbox("Use Log Scale (Price & Portfolio)", value=False)
-
-    # No Run Button -> Logic executes immediately below
 
 # ---------------------------------------------------------
 # 4. Data & Calculation Functions
@@ -185,11 +182,28 @@ def calculate_metrics(df):
     negative_returns = df.loc[df['Daily_Return'] < 0, 'Daily_Return']
     downside_std = negative_returns.std()
     sortino = (mean_return * 252) / (downside_std * np.sqrt(252)) if downside_std != 0 else 0.0
+    
+    # Financial metrics extraction
+    final_val = df['Portfolio_Value'].iloc[-1]
+    total_inv = df['Total_Invested'].iloc[-1]
+    profit = final_val - total_inv
+    ret_pct = (profit / total_inv) * 100 if total_inv != 0 else 0
+    max_dd = df['Drawdown'].min() * 100
 
-    return cagr, volatility, sharpe, sortino
+    return {
+        "final_val": final_val,
+        "total_inv": total_inv,
+        "profit": profit,
+        "ret_pct": ret_pct,
+        "max_dd": max_dd,
+        "cagr": cagr,
+        "vol": volatility,
+        "sharpe": sharpe,
+        "sortino": sortino
+    }
 
 # ---------------------------------------------------------
-# 5. Plotting Function (Handles None comparison)
+# 5. Plotting Function
 # ---------------------------------------------------------
 def plot_comparison_charts(df_main, df_comp, name_main, name_comp, log_scale):
     y_axis_type = "log" if log_scale else "linear"
@@ -282,7 +296,6 @@ def plot_comparison_charts(df_main, df_comp, name_main, name_comp, log_scale):
 # ---------------------------------------------------------
 # 6. Main Execution (Real-time)
 # ---------------------------------------------------------
-# Spinner runs immediately on every rerun
 with st.spinner(f'Processing Simulation...'):
     # 1. Fetch Main Data
     df_main = get_data(selected_ticker, start_date, end_date)
@@ -304,46 +317,58 @@ with st.spinner(f'Processing Simulation...'):
             else:
                 df_comp_raw = get_data(comparison_ticker, start_date, end_date)
                 if df_comp_raw is not None and not df_comp_raw.empty:
-                    # Reindex to match Main Asset's dates exactly
                     df_comp = df_comp_raw.reindex(df_main.index).ffill().dropna()
                 else:
                     st.warning(f"Could not fetch data for {comparison_ticker}. Comparison skipped.")
         
-        # --- Run Backtest for Main ---
+        # --- Run Backtest ---
         res_main = run_dca_backtest(df_main, initial_capital, recurring_amount, frequency)
+        metrics_main = calculate_metrics(res_main)
         
-        # --- Run Backtest for Comp (if exists) ---
+        metrics_comp = None
         if df_comp is not None:
             res_comp = run_dca_backtest(df_comp, initial_capital, recurring_amount, frequency)
-            
-        # --- Metrics for Main Asset ---
-        final_val = res_main['Portfolio_Value'].iloc[-1]
-        total_inv = res_main['Total_Invested'].iloc[-1]
-        profit = final_val - total_inv
-        ret_pct = (profit / total_inv) * 100
-        max_dd = res_main['Drawdown'].min() * 100
-        cagr, vol, sharpe, sortino = calculate_metrics(res_main)
-        
-        if res_comp is not None:
+            metrics_comp = calculate_metrics(res_comp)
             st.success(f"Simulation Complete: {selected_ticker} vs {comp_label_final}")
         else:
             st.success(f"Simulation Complete: {selected_ticker}")
             
-        # Show Main Asset Metrics
-        st.markdown(f"### 📊 Performance Summary (Main: {selected_ticker})")
-        
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Final Value", f"${final_val:,.0f}", help="최종 자산 평가액입니다.")
-        c2.metric("Total Invested", f"${total_inv:,.0f}", help="투자한 원금의 총합입니다.")
-        c3.metric("Total Profit", f"${profit:,.0f} ({ret_pct:.1f}%)", help="순이익과 수익률입니다.")
-        c4.metric("Max Drawdown", f"{max_dd:.2f}%", help="최고점 대비 가장 많이 하락했던 비율입니다.")
+        # --- Dashboard Display ---
+        if metrics_comp:
+            # 2 Columns for Comparison
+            c1, c2 = st.columns(2)
+            
+            with c1:
+                st.subheader(f"🟦 Main: {selected_ticker}")
+                st.metric("Final Value", f"${metrics_main['final_val']:,.0f}")
+                st.metric("Total Profit", f"${metrics_main['profit']:,.0f} ({metrics_main['ret_pct']:.1f}%)")
+                st.metric("Max Drawdown", f"{metrics_main['max_dd']:.2f}%")
+                st.metric("Asset CAGR", f"{metrics_main['cagr']:.2f}%")
+                st.metric("Sharpe / Sortino", f"{metrics_main['sharpe']:.2f} / {metrics_main['sortino']:.2f}")
 
-        c5, c6, c7, c8 = st.columns(4)
-        c5.metric("Asset CAGR", f"{cagr:.2f}%", help="연평균 성장률")
-        c6.metric("Volatility", f"{vol:.2f}%", help="연간 변동성")
-        c7.metric("Sharpe Ratio", f"{sharpe:.2f}", help="위험 대비 수익률 (높을수록 좋음)")
-        c8.metric("Sortino Ratio", f"{sortino:.2f}", help="하락 위험 대비 수익률 (높을수록 좋음)")
-        
+            with c2:
+                st.subheader(f"🟧 Comp: {comp_label_final}")
+                st.metric("Final Value", f"${metrics_comp['final_val']:,.0f}")
+                st.metric("Total Profit", f"${metrics_comp['profit']:,.0f} ({metrics_comp['ret_pct']:.1f}%)")
+                st.metric("Max Drawdown", f"{metrics_comp['max_dd']:.2f}%")
+                st.metric("Asset CAGR", f"{metrics_comp['cagr']:.2f}%")
+                st.metric("Sharpe / Sortino", f"{metrics_comp['sharpe']:.2f} / {metrics_comp['sortino']:.2f}")
+                
+        else:
+            # Single View (Existing Layout)
+            st.markdown(f"### 📊 Performance Summary (Main: {selected_ticker})")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Final Value", f"${metrics_main['final_val']:,.0f}", help="최종 자산 평가액입니다.")
+            c2.metric("Total Invested", f"${metrics_main['total_inv']:,.0f}", help="투자한 원금의 총합입니다.")
+            c3.metric("Total Profit", f"${metrics_main['profit']:,.0f} ({metrics_main['ret_pct']:.1f}%)", help="순이익과 수익률입니다.")
+            c4.metric("Max Drawdown", f"{metrics_main['max_dd']:.2f}%", help="최고점 대비 가장 많이 하락했던 비율입니다.")
+
+            c5, c6, c7, c8 = st.columns(4)
+            c5.metric("Asset CAGR", f"{metrics_main['cagr']:.2f}%", help="연평균 성장률")
+            c6.metric("Volatility", f"{metrics_main['vol']:.2f}%", help="연간 변동성")
+            c7.metric("Sharpe Ratio", f"{metrics_main['sharpe']:.2f}", help="위험 대비 수익률")
+            c8.metric("Sortino Ratio", f"{metrics_main['sortino']:.2f}", help="하락 위험 대비 수익률")
+
         st.markdown("---")
         
         # --- Plot Comparison ---
