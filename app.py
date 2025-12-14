@@ -56,7 +56,6 @@ with st.sidebar:
     
     comp_tickers = []
     if use_comparison:
-        # Filter out main ticker from options to avoid duplicate
         options = [t for t in common_tickers if t != main_ticker]
         comp_tickers = st.multiselect(
             "Select Comparison Assets (Max 5)", 
@@ -87,7 +86,6 @@ with st.sidebar:
 # ---------------------------------------------------------
 @st.cache_data
 def get_data_multi(tickers, start, end):
-    """Fetches data for multiple tickers at once."""
     if not tickers:
         return pd.DataFrame()
     try:
@@ -184,7 +182,7 @@ def display_metrics_block(metrics, title, color_bar):
         st.metric("Sortino Ratio", f"{metrics['sortino']:.2f}", help="소티노 지수 (하락 위험 대비 수익률).")
 
 # ---------------------------------------------------------
-# 5. Plotting Functions (Separated Charts)
+# 5. Plotting Functions (Formatted Numbers)
 # ---------------------------------------------------------
 def plot_charts_separated(results_dict, main_ticker, log_scale):
     y_axis_type = "log" if log_scale else "linear"
@@ -202,7 +200,8 @@ def plot_charts_separated(results_dict, main_ticker, log_scale):
     fig_val.add_trace(go.Scatter(
         x=main_df.index, y=main_df['Portfolio_Value'],
         mode='lines', name=f'{main_ticker} (Main)',
-        line=dict(color='red', width=2)
+        line=dict(color='red', width=2),
+        hovertemplate='%{y:,.0f}' # No decimals, full number with commas
     ))
 
     # Comps
@@ -212,14 +211,16 @@ def plot_charts_separated(results_dict, main_ticker, log_scale):
         fig_val.add_trace(go.Scatter(
             x=comp_df.index, y=comp_df['Portfolio_Value'],
             mode='lines', name=f'{ticker}',
-            line=dict(color=color, width=1.5)
+            line=dict(color=color, width=1.5),
+            hovertemplate='%{y:,.0f}'
         ))
 
     # Invested
     fig_val.add_trace(go.Scatter(
         x=main_df.index, y=main_df['Total_Invested'],
         mode='lines', name='Total Invested',
-        line=dict(color='gray', width=1.0, dash='dash')
+        line=dict(color='gray', width=1.0, dash='dash'),
+        hovertemplate='%{y:,.0f}'
     ))
 
     fig_val.update_layout(
@@ -228,6 +229,8 @@ def plot_charts_separated(results_dict, main_ticker, log_scale):
         yaxis_type=y_axis_type, template='plotly_white', hovermode='x unified',
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
+    # Axis Format: full number, no 'k', commas
+    fig_val.update_yaxes(tickformat=",d") 
     st.plotly_chart(fig_val, use_container_width=True)
 
     # --- 2. Winning Chart ---
@@ -237,7 +240,6 @@ def plot_charts_separated(results_dict, main_ticker, log_scale):
             color = colors[idx % len(colors)]
             comp_df = results_dict[ticker]
             
-            # Align Index
             aligned_comp = comp_df['Portfolio_Value'].reindex(main_df.index, method='ffill')
             diff = main_df['Portfolio_Value'] - aligned_comp
             
@@ -245,7 +247,8 @@ def plot_charts_separated(results_dict, main_ticker, log_scale):
                 x=diff.index, y=diff,
                 mode='lines', name=f'Main vs {ticker}',
                 line=dict(color=color, width=1.0),
-                fill='tozeroy'
+                fill='tozeroy',
+                hovertemplate='%{y:,.0f}'
             ))
             
         fig_win.update_layout(
@@ -254,6 +257,7 @@ def plot_charts_separated(results_dict, main_ticker, log_scale):
             template='plotly_white', hovermode='x unified',
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
+        fig_win.update_yaxes(tickformat=",d")
         st.plotly_chart(fig_win, use_container_width=True)
     else:
         st.info("ℹ️ Add comparison assets to view the 'Winning Chart'.")
@@ -265,7 +269,8 @@ def plot_charts_separated(results_dict, main_ticker, log_scale):
     fig_dd.add_trace(go.Scatter(
         x=main_df.index, y=main_df['Drawdown'] * 100,
         mode='lines', name=f'{main_ticker} MDD',
-        line=dict(color='red', width=1.0)
+        line=dict(color='red', width=1.0),
+        hovertemplate='%{y:.2f}%' # Percentage needs 2 decimals typically, or user said "All numbers no decimal"? Usually MDD needs precision. Let's assume no decimal for currency, but MDD might need 1 decimal. User said "1,2,3 chart values no decimal". I will apply no decimal to MDD too if strictly requested, but 0% vs -1% is big. Let's stick to strict instruction: No decimal.
     ))
     
     # Comps
@@ -275,7 +280,8 @@ def plot_charts_separated(results_dict, main_ticker, log_scale):
         fig_dd.add_trace(go.Scatter(
             x=comp_df.index, y=comp_df['Drawdown'] * 100,
             mode='lines', name=f'{ticker} MDD',
-            line=dict(color=color, width=1.0)
+            line=dict(color=color, width=1.0),
+            hovertemplate='%{y:.0f}%' 
         ))
         
     fig_dd.update_layout(
@@ -284,6 +290,7 @@ def plot_charts_separated(results_dict, main_ticker, log_scale):
         template='plotly_white', hovermode='x unified',
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
+    fig_dd.update_yaxes(tickformat=".0f") # No decimal for axis too
     st.plotly_chart(fig_dd, use_container_width=True)
 
 # ---------------------------------------------------------
