@@ -6,9 +6,23 @@ import plotly.graph_objects as go
 from datetime import datetime
 
 # ---------------------------------------------------------
-# 1. Page Config
+# 1. Page Config & CSS Styling
 # ---------------------------------------------------------
 st.set_page_config(page_title="DCA Backtest Simulator", layout="wide")
+
+# CSS to reduce font size for metrics to make them fit better
+st.markdown("""
+    <style>
+    [data-testid="stMetricValue"] {
+        font-size: 24px !important;
+    }
+    [data-testid="stMetricLabel"] {
+        font-size: 14px !important;
+        font-weight: bold;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
 st.title("📈 DCA (Dollar Cost Averaging) Backtest Simulator")
 
 # ---------------------------------------------------------
@@ -202,6 +216,26 @@ def calculate_metrics(df):
         "sortino": sortino
     }
 
+def display_metrics_block(metrics, title, color_bar):
+    """Helper to display 8 metrics in a grid"""
+    st.markdown(f"### {color_bar} {title}")
+    
+    # Create 2 columns inside the block for compact view
+    c1, c2 = st.columns(2)
+    
+    with c1:
+        st.metric("Final Value", f"${metrics['final_val']:,.0f}", help="최종 자산 평가액입니다.")
+        st.metric("Total Profit", f"${metrics['profit']:,.0f} ({metrics['ret_pct']:.1f}%)", help="총 순이익금과 수익률입니다.")
+        st.metric("Asset CAGR", f"{metrics['cagr']:.2f}%", help="연평균 성장률(복리)입니다.")
+        st.metric("Sharpe Ratio", f"{metrics['sharpe']:.2f}", help="샤프 지수 (위험 대비 수익률). 보통 1.0 이상이면 좋고, 높을수록 훌륭한 전략입니다.")
+        
+    with c2:
+        st.metric("Total Invested", f"${metrics['total_inv']:,.0f}", help="총 투자된 원금입니다.")
+        st.metric("Max Drawdown", f"{metrics['max_dd']:.2f}%", help="최고점 대비 최대 하락폭(MDD)입니다.")
+        st.metric("Volatility", f"{metrics['vol']:.2f}%", help="연간 변동성입니다. 수치가 높을수록 가격 등락이 심합니다.")
+        st.metric("Sortino Ratio", f"{metrics['sortino']:.2f}", help="소티노 지수. 하락 변동성(손실 위험)만 고려한 수익 효율성 지표입니다.")
+
+
 # ---------------------------------------------------------
 # 5. Plotting Function
 # ---------------------------------------------------------
@@ -211,13 +245,11 @@ def plot_comparison_charts(df_main, df_comp, name_main, name_comp, log_scale):
     
     # --- 1. Asset Price Chart ---
     fig_price = go.Figure()
-    # Main Asset
     fig_price.add_trace(go.Scatter(
         x=df_main.index, y=df_main['Close'],
         mode='lines', name=f'{name_main} Price',
         line=dict(color='black', width=1.5)
     ))
-    # Comparison Asset
     if has_comp:
         fig_price.add_trace(go.Scatter(
             x=df_comp.index, y=df_comp['Close'],
@@ -235,15 +267,11 @@ def plot_comparison_charts(df_main, df_comp, name_main, name_comp, log_scale):
 
     # --- 2. Portfolio Value Chart ---
     fig_value = go.Figure()
-    
-    # Main Portfolio
     fig_value.add_trace(go.Scatter(
         x=df_main.index, y=df_main['Portfolio_Value'],
         mode='lines', name=f'{name_main} Portfolio',
         line=dict(color='red', width=1.5)
     ))
-    
-    # Comparison Portfolio
     if has_comp:
         fig_value.add_trace(go.Scatter(
             x=df_comp.index, y=df_comp['Portfolio_Value'],
@@ -251,7 +279,6 @@ def plot_comparison_charts(df_main, df_comp, name_main, name_comp, log_scale):
             line=dict(color='orange', width=1.5)
         ))
 
-    # Total Invested (Common Principal)
     fig_value.add_trace(go.Scatter(
         x=df_main.index, y=df_main['Total_Invested'],
         mode='lines', name='Total Invested (Principal)',
@@ -268,16 +295,12 @@ def plot_comparison_charts(df_main, df_comp, name_main, name_comp, log_scale):
 
     # --- 3. Drawdown Chart ---
     fig_dd = go.Figure()
-    
-    # Main Drawdown
     fig_dd.add_trace(go.Scatter(
         x=df_main.index, y=df_main['Drawdown'] * 100,
         mode='lines', name=f'{name_main} DD',
         fill='tozeroy',
         line=dict(color='blue', width=1.0)
     ))
-    
-    # Comparison Drawdown
     if has_comp:
         fig_dd.add_trace(go.Scatter(
             x=df_comp.index, y=df_comp['Drawdown'] * 100,
@@ -308,10 +331,8 @@ with st.spinner(f'Processing Simulation...'):
         
         # --- Logic for Comparison Data ---
         if use_simulation:
-            # Scenario A: Synthetic Leverage
             df_comp = generate_leveraged_data(df_main, leverage_ratio)
         elif comparison_ticker != "None":
-            # Scenario B: Real Asset Comparison
             if comparison_ticker == selected_ticker:
                 df_comp = df_main.copy()
             else:
@@ -335,39 +356,18 @@ with st.spinner(f'Processing Simulation...'):
             
         # --- Dashboard Display ---
         if metrics_comp:
-            # 2 Columns for Comparison
-            c1, c2 = st.columns(2)
+            # Dual View (Side by Side)
+            main_col, comp_col = st.columns(2)
             
-            with c1:
-                st.subheader(f"🟦 Main: {selected_ticker}")
-                st.metric("Final Value", f"${metrics_main['final_val']:,.0f}")
-                st.metric("Total Profit", f"${metrics_main['profit']:,.0f} ({metrics_main['ret_pct']:.1f}%)")
-                st.metric("Max Drawdown", f"{metrics_main['max_dd']:.2f}%")
-                st.metric("Asset CAGR", f"{metrics_main['cagr']:.2f}%")
-                st.metric("Sharpe / Sortino", f"{metrics_main['sharpe']:.2f} / {metrics_main['sortino']:.2f}")
-
-            with c2:
-                st.subheader(f"🟧 Comp: {comp_label_final}")
-                st.metric("Final Value", f"${metrics_comp['final_val']:,.0f}")
-                st.metric("Total Profit", f"${metrics_comp['profit']:,.0f} ({metrics_comp['ret_pct']:.1f}%)")
-                st.metric("Max Drawdown", f"{metrics_comp['max_dd']:.2f}%")
-                st.metric("Asset CAGR", f"{metrics_comp['cagr']:.2f}%")
-                st.metric("Sharpe / Sortino", f"{metrics_comp['sharpe']:.2f} / {metrics_comp['sortino']:.2f}")
+            with main_col:
+                display_metrics_block(metrics_main, f"Main: {selected_ticker}", "🟦")
+            
+            with comp_col:
+                display_metrics_block(metrics_comp, f"Comp: {comp_label_final}", "🟧")
                 
         else:
-            # Single View (Existing Layout)
-            st.markdown(f"### 📊 Performance Summary (Main: {selected_ticker})")
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Final Value", f"${metrics_main['final_val']:,.0f}", help="최종 자산 평가액입니다.")
-            c2.metric("Total Invested", f"${metrics_main['total_inv']:,.0f}", help="투자한 원금의 총합입니다.")
-            c3.metric("Total Profit", f"${metrics_main['profit']:,.0f} ({metrics_main['ret_pct']:.1f}%)", help="순이익과 수익률입니다.")
-            c4.metric("Max Drawdown", f"{metrics_main['max_dd']:.2f}%", help="최고점 대비 가장 많이 하락했던 비율입니다.")
-
-            c5, c6, c7, c8 = st.columns(4)
-            c5.metric("Asset CAGR", f"{metrics_main['cagr']:.2f}%", help="연평균 성장률")
-            c6.metric("Volatility", f"{metrics_main['vol']:.2f}%", help="연간 변동성")
-            c7.metric("Sharpe Ratio", f"{metrics_main['sharpe']:.2f}", help="위험 대비 수익률")
-            c8.metric("Sortino Ratio", f"{metrics_main['sortino']:.2f}", help="하락 위험 대비 수익률")
+            # Single View (Only Main)
+            display_metrics_block(metrics_main, f"Main: {selected_ticker}", "🟦")
 
         st.markdown("---")
         
