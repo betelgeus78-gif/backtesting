@@ -6,22 +6,20 @@ import plotly.graph_objects as go
 from datetime import datetime
 
 # -----------------------------------------------------------------------------
-# [1] Streamlit 페이지 설정
+# [1] 페이지 설정 & 세션 상태 초기화
 # -----------------------------------------------------------------------------
-st.set_page_config(
-    page_title="Adaptive DCA Simulator",
-    page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Adaptive DCA Simulator", page_icon="📈", layout="wide")
 
-# CSS: 테이블 폰트 및 여백 조정
 st.markdown("""
 <style>
     .stTable { font-size: 14px !important; }
     .block-container { padding-top: 2rem; }
 </style>
 """, unsafe_allow_html=True)
+
+# 시뮬레이션 결과를 저장할 저장소 초기화
+if 'sim_result' not in st.session_state:
+    st.session_state.sim_result = None
 
 # -----------------------------------------------------------------------------
 # [2] 사이드바 설정
@@ -43,10 +41,10 @@ tf_map = {"Weekly": "W", "Monthly": "ME", "Daily": "D"}
 tf_code = tf_map[chart_timeframe]
 
 # -----------------------------------------------------------------------------
-# [3] 시뮬레이션 로직 (캐싱 적용)
+# [3] 시뮬레이션 함수 (데이터 계산)
 # -----------------------------------------------------------------------------
 @st.cache_data
-def run_simulation(ticker, start, end, base_lev, boost_lev, expense, ema, amount, tf):
+def run_simulation_logic(ticker, start, end, base_lev, boost_lev, expense, ema, amount, tf):
     start_str = start.strftime("%Y-%m-%d")
     end_str = end.strftime("%Y-%m-%d")
     
@@ -91,12 +89,10 @@ def run_simulation(ticker, start, end, base_lev, boost_lev, expense, ema, amount
 
     df_calc = df_main.loc[start_str:]
     
-    # DCA Dates
     df_temp = df_calc.copy()
     df_temp['YM'] = df_temp.index.strftime('%Y-%m')
     buy_dates = set(df_temp.groupby('YM').head(1).index)
 
-    # Variables
     mix_base, mix_boost, inv_mix = 0.0, 0.0, 0.0
     only_boost, inv_boost = 0.0, 0.0
     only_base, inv_base = 0.0, 0.0
@@ -125,7 +121,6 @@ def run_simulation(ticker, start, end, base_lev, boost_lev, expense, ema, amount
             if is_below: mix_boost += amount / p_boost
             else: mix_base += amount / p_base
             inv_mix += amount
-            
             only_boost += amount / p_boost; inv_boost += amount
             only_base += amount / p_base; inv_base += amount
             
@@ -160,116 +155,122 @@ def run_simulation(ticker, start, end, base_lev, boost_lev, expense, ema, amount
     }, None
 
 # -----------------------------------------------------------------------------
-# [4] 메인 UI 구성
+# [4] 메인 UI 로직
 # -----------------------------------------------------------------------------
 st.title("🚀 Adaptive DCA Simulator")
 st.markdown(f"**Rule:** If {underlying_ticker} < {ema_period} EMA → Buy **{boost_lev_ratio}x** / Else → Buy **{base_lev_ratio}x**")
 
+# [핵심 변경] 버튼 클릭 시에만 계산하고, 결과는 session_state에 저장
 if st.sidebar.button("Run Simulation", type="primary"):
-    with st.spinner("Simulating..."):
-        res, err = run_simulation(underlying_ticker, start_date, end_date, base_lev_ratio, boost_lev_ratio, expense_ratio_pct, ema_period, dca_amount, tf_code)
+    with st.spinner("Calculating..."):
+        res, err = run_simulation_logic(underlying_ticker, start_date, end_date, base_lev_ratio, boost_lev_ratio, expense_ratio_pct, ema_period, dca_amount, tf_code)
+        if err:
+            st.error(err)
+        else:
+            st.session_state.sim_result = res # 결과 저장!
 
-    if err: st.error(err)
-    else:
-        # [A] KPI Table
-        def get_kpi(d, name):
-            inv, fin = d['inv'], d['fin']
-            pnl = fin - inv
-            pnl_pct = (pnl / inv * 100) if inv > 0 else 0
-            
-            df = d['df']
-            years = (df.index[-1] - df.index[0]).days / 365.25
-            cagr = pnl_pct / years if years > 0 else 0
-            
-            rets = df['Value'].pct_change().dropna()
-            sharpe = (rets.mean()*res['factor'] - 0.02) / (rets.std()*np.sqrt(res['factor'])) if rets.std() != 0 else 0
-            
-            return [name, f"${inv:,.0f}", f"${fin:,.0f}", f"${pnl:,.0f}", f"{pnl_pct:,.0f}%", f"{cagr:,.1f}%", f"{d['mdd']:.2f}%", f"{sharpe:.2f}"]
+# -----------------------------------------------------------------------------
+# [5] 결과 표시 (저장된 데이터가 있을 때만 실행)
+# -----------------------------------------------------------------------------
+if st.session_state.sim_result is not None:
+    res = st.session_state.sim_result
+    
+    # [A] KPI Table
+    def get_kpi(d, name):
+        inv, fin = d['inv'], d['fin']
+        pnl = fin - inv
+        pnl_pct = (pnl / inv * 100) if inv > 0 else 0
+        df = d['df']
+        years = (df.index[-1] - df.index[0]).days / 365.25
+        cagr = pnl_pct / years if years > 0 else 0
+        rets = df['Value'].pct_change().dropna()
+        sharpe = (rets.mean()*res['factor'] - 0.02) / (rets.std()*np.sqrt(res['factor'])) if rets.std() != 0 else 0
+        return [name, f"${inv:,.0f}", f"${fin:,.0f}", f"${pnl:,.0f}", f"{pnl_pct:,.0f}%", f"{cagr:,.1f}%", f"{d['mdd']:.2f}%", f"{sharpe:.2f}"]
 
-        kpi = [
-            get_kpi(res['mix'], f"Mix ({base_lev_ratio}x/{boost_lev_ratio}x)"),
-            get_kpi(res['boost'], f"Only {boost_lev_ratio}x"),
-            get_kpi(res['base'], f"Only {base_lev_ratio}x")
-        ]
-        df_kpi = pd.DataFrame(kpi, columns=["Strategy", "Invested", "Final", "PnL $", "PnL %", "CAGR", "MDD", "Sharpe"])
-        
-        def highlight_mdd(val):
-            return 'color: red' if '%' in val and float(val.strip('%')) < -30 else ''
+    kpi = [
+        get_kpi(res['mix'], f"Mix ({base_lev_ratio}x/{boost_lev_ratio}x)"),
+        get_kpi(res['boost'], f"Only {boost_lev_ratio}x"),
+        get_kpi(res['base'], f"Only {base_lev_ratio}x")
+    ]
+    df_kpi = pd.DataFrame(kpi, columns=["Strategy", "Invested", "Final", "PnL $", "PnL %", "CAGR", "MDD", "Sharpe"])
+    
+    def highlight_mdd(val):
+        return 'color: red' if '%' in val and float(val.strip('%')) < -30 else ''
 
-        st.subheader("📊 Performance Summary")
-        st.dataframe(df_kpi.style.applymap(highlight_mdd, subset=['MDD']), use_container_width=True)
+    st.subheader("📊 Performance Summary")
+    st.dataframe(df_kpi.style.applymap(highlight_mdd, subset=['MDD']), use_container_width=True)
 
-        st.markdown("---")
-        st.subheader("📈 Detailed Charts")
+    st.markdown("---")
+    st.subheader("📈 Detailed Charts")
 
-        # 공통 레이아웃 설정 함수
-        def create_fig(title, log_y=False):
-            f = go.Figure()
-            f.update_layout(
-                title=title, height=400, template="plotly_white", hovermode="x unified",
-                legend=dict(x=1.01, y=1, xanchor='left', yanchor='top'),
-                margin=dict(l=0, r=0, t=40, b=0),
-                yaxis=dict(type="log" if log_y else "linear", fixedrange=False), # y축 줌 가능하게
-                xaxis=dict(fixedrange=False), # x축 줌 가능하게
-                shapes=[dict(type="rect", xref="x", yref="paper", x0=s, x1=e, y0=0, y1=1, fillcolor="red", opacity=0.1, layer="below", line_width=0) for s, e in res['zones']]
-            )
-            return f
+    def create_fig(title, log_y=False):
+        f = go.Figure()
+        f.update_layout(
+            title=title, height=400, template="plotly_white", hovermode="x unified",
+            legend=dict(x=1.01, y=1, xanchor='left', yanchor='top'),
+            margin=dict(l=0, r=0, t=40, b=0),
+            yaxis=dict(type="log" if log_y else "linear", fixedrange=False),
+            xaxis=dict(fixedrange=False),
+            shapes=[dict(type="rect", xref="x", yref="paper", x0=s, x1=e, y0=0, y1=1, fillcolor="red", opacity=0.1, layer="below", line_width=0) for s, e in res['zones']]
+        )
+        return f
 
-        # [Chart 1] Portfolio Value
-        c1_left, c1_right = st.columns([0.85, 0.15])
-        with c1_right:
-            st.write("") # 줄맞춤용 공백
-            st.write("") 
-            use_log_1 = st.checkbox("Log Scale", value=True, key="log1")
-        
-        with c1_left:
-            fig1 = create_fig("1. Portfolio Value ($)", log_y=use_log_1)
-            fig1.add_trace(go.Scatter(x=res['mix']['df'].index, y=res['mix']['df']['Value'], name='Mix', line=dict(color='blue', width=2)))
-            fig1.add_trace(go.Scatter(x=res['boost']['df'].index, y=res['boost']['df']['Value'], name=f'Only {boost_lev_ratio}x', line=dict(color='orange', width=2)))
-            fig1.add_trace(go.Scatter(x=res['base']['df'].index, y=res['base']['df']['Value'], name=f'Only {base_lev_ratio}x', line=dict(color='black', width=1, dash='dot')))
-            st.plotly_chart(fig1, use_container_width=True)
+    # [Chart 1] Portfolio Value
+    c1_left, c1_right = st.columns([0.85, 0.15])
+    with c1_right:
+        st.write("") 
+        st.write("") 
+        # key="log1" 덕분에 체크 상태가 session_state에 자동 저장됨
+        use_log_1 = st.checkbox("Log Scale", value=True, key="log1") 
+    
+    with c1_left:
+        fig1 = create_fig("1. Portfolio Value ($)", log_y=use_log_1)
+        fig1.add_trace(go.Scatter(x=res['mix']['df'].index, y=res['mix']['df']['Value'], name='Mix', line=dict(color='blue', width=2)))
+        fig1.add_trace(go.Scatter(x=res['boost']['df'].index, y=res['boost']['df']['Value'], name=f'Only {boost_lev_ratio}x', line=dict(color='orange', width=2)))
+        fig1.add_trace(go.Scatter(x=res['base']['df'].index, y=res['base']['df']['Value'], name=f'Only {base_lev_ratio}x', line=dict(color='black', width=1, dash='dot')))
+        st.plotly_chart(fig1, use_container_width=True)
 
-        # [Chart 2] Value Gap (음수 포함 -> Log 불가)
-        c2_left, c2_right = st.columns([0.85, 0.15])
-        with c2_right:
-            st.write("") 
-            st.write("")
-            st.caption("ℹ️ Linear Only") # 갭은 음수가 있어서 로그 불가
-        
-        with c2_left:
-            fig2 = create_fig("2. Value Gap (Mix - Boost)")
-            gap = res['mix']['df']['Value'] - res['boost']['df']['Value']
-            fig2.add_trace(go.Scatter(x=gap.index, y=gap.where(gap >= 0, 0), name='Mix Win', mode='lines', line=dict(width=0), fill='tozeroy', fillcolor='rgba(0,0,255,0.3)'))
-            fig2.add_trace(go.Scatter(x=gap.index, y=gap.where(gap < 0, 0), name='Boost Win', mode='lines', line=dict(width=0), fill='tozeroy', fillcolor='rgba(255,165,0,0.3)'))
-            fig2.add_trace(go.Scatter(x=gap.index, y=gap, name='Gap', line=dict(color='gray', width=1)))
-            st.plotly_chart(fig2, use_container_width=True)
+    # [Chart 2] Value Gap
+    c2_left, c2_right = st.columns([0.85, 0.15])
+    with c2_right:
+        st.write("") 
+        st.write("")
+        st.caption("ℹ️ Linear Only")
+    
+    with c2_left:
+        fig2 = create_fig("2. Value Gap (Mix - Boost)")
+        gap = res['mix']['df']['Value'] - res['boost']['df']['Value']
+        fig2.add_trace(go.Scatter(x=gap.index, y=gap.where(gap >= 0, 0), name='Mix Win', mode='lines', line=dict(width=0), fill='tozeroy', fillcolor='rgba(0,0,255,0.3)'))
+        fig2.add_trace(go.Scatter(x=gap.index, y=gap.where(gap < 0, 0), name='Boost Win', mode='lines', line=dict(width=0), fill='tozeroy', fillcolor='rgba(255,165,0,0.3)'))
+        fig2.add_trace(go.Scatter(x=gap.index, y=gap, name='Gap', line=dict(color='gray', width=1)))
+        st.plotly_chart(fig2, use_container_width=True)
 
-        # [Chart 3] Condition
-        c3_left, c3_right = st.columns([0.85, 0.15])
-        with c3_right:
-            st.write("") 
-            st.write("")
-            use_log_3 = st.checkbox("Log Scale", value=True, key="log3")
-        
-        with c3_left:
-            fig3 = create_fig(f"3. Condition ({underlying_ticker} vs EMA)", log_y=use_log_3)
-            df_c = res['df_calc']
-            fig3.add_trace(go.Scatter(x=df_c.index, y=df_c['Raw_Price'], name='Price', line=dict(color='black', width=1)))
-            fig3.add_trace(go.Scatter(x=df_c.index, y=df_c[f'EMA{ema_period}'], name='EMA', line=dict(color='green', width=1, dash='dash')))
-            st.plotly_chart(fig3, use_container_width=True)
+    # [Chart 3] Condition
+    c3_left, c3_right = st.columns([0.85, 0.15])
+    with c3_right:
+        st.write("") 
+        st.write("")
+        use_log_3 = st.checkbox("Log Scale", value=True, key="log3")
+    
+    with c3_left:
+        fig3 = create_fig(f"3. Condition ({underlying_ticker} vs EMA)", log_y=use_log_3)
+        df_c = res['df_calc']
+        fig3.add_trace(go.Scatter(x=df_c.index, y=df_c['Raw_Price'], name='Price', line=dict(color='black', width=1)))
+        fig3.add_trace(go.Scatter(x=df_c.index, y=df_c[f'EMA{ema_period}'], name='EMA', line=dict(color='green', width=1, dash='dash')))
+        st.plotly_chart(fig3, use_container_width=True)
 
-        # [Chart 4] Drawdown (음수 포함 -> Log 불가)
-        c4_left, c4_right = st.columns([0.85, 0.15])
-        with c4_right:
-            st.write("") 
-            st.write("")
-            st.caption("ℹ️ Linear Only")
-        
-        with c4_left:
-            fig4 = create_fig("4. Drawdown (%)")
-            fig4.add_trace(go.Scatter(x=res['mix']['df'].index, y=res['mix']['df']['DD'], name='Mix MDD', line=dict(color='blue', width=1)))
-            fig4.add_trace(go.Scatter(x=res['boost']['df'].index, y=res['boost']['df']['DD'], name='Boost MDD', line=dict(color='orange', width=1)))
-            st.plotly_chart(fig4, use_container_width=True)
+    # [Chart 4] Drawdown
+    c4_left, c4_right = st.columns([0.85, 0.15])
+    with c4_right:
+        st.write("") 
+        st.write("")
+        st.caption("ℹ️ Linear Only")
+    
+    with c4_left:
+        fig4 = create_fig("4. Drawdown (%)")
+        fig4.add_trace(go.Scatter(x=res['mix']['df'].index, y=res['mix']['df']['DD'], name='Mix MDD', line=dict(color='blue', width=1)))
+        fig4.add_trace(go.Scatter(x=res['boost']['df'].index, y=res['boost']['df']['DD'], name='Boost MDD', line=dict(color='orange', width=1)))
+        st.plotly_chart(fig4, use_container_width=True)
 
 else:
     st.info("👈 Please enter parameters in the sidebar and click 'Run Simulation'")
